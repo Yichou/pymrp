@@ -1,0 +1,22 @@
+# 生成物 / 大二进制 / 本地环境
+__pycache__/
+*.pyc
+build/
+dist/
+
+# 模拟器运行时与产物（fetch_runtime.py 可重新获取）
+mrp_emu/runtime/
+mrp_emu/out/
+mrp_emu/mrp_emu.pyz
+
+# 参考资料与解包缓存（版权物/体积大，不入库）
+ref/
+.tmp/
+.cache/
+
+# 工作区内部
+.workbuddy/
+
+# 系统杂项
+Thumbs.db
+.DS_Store

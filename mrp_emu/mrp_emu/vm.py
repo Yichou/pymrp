@@ -1,0 +1,319 @@
+"""Unicorn ARM 引擎封装 —— 对应 vmrp 的 vmrp.c。
+
+关键点：Python 的 bytearray 与 unicorn 通过 mem_map_ptr 共享同一块物理内存，
+两边看到的是同一份数据，无需同步。
+"""
+
+from __future__ import annotations
+
+import ctypes
+import struct
+import time
+from pathlib import Path
+from typing import Callable
+
+from unicorn import (
+    UC_ARCH_ARM,
+    UC_HOOK_CODE,
+    UC_MODE_ARM,
+    UC_PROT_ALL,
+    Uc,
+    UcError,
+)
+from unicorn.arm_const import (
+    UC_ARM_REG_LR,
+    UC_ARM_REG_PC,
+    UC_ARM_REG_R0,
+    UC_ARM_REG_R1,
+    UC_ARM_REG_R2,
+    UC_ARM_REG_R3,
+    UC_ARM_REG_R9,
+    UC_ARM_REG_SP,
+)
+
+from .consts import (
+    CODE_ADDRESS,
+    DSM_INIT,
+    MR_EVENT,
+    MR_FAILED,
+    MR_START_DSM,
+    MR_SUCCESS,
+    MR_TIMER,
+    STACK_ADDRESS,
+    STACK_SIZE,
+    START_ADDRESS,
+    TOTAL_MEMORY,
+    VMRP_VER,
+)
+from .memory import MrpMemory
+
+STOP_ADDRESS = CODE_ADDRESS          # 所有 runCode 的停止地址
+
+
+class Vm:
+    def __init__(self, log: Callable[[str], None] = print) -> None:
+        self.log = log
+        self.mem = MrpMemory()
+        self.app = None
+
+        self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+        self._map_memory()
+
+        # 满递减栈
+        self.uc.reg_write(UC_ARM_REG_SP, STACK_ADDRESS + STACK_SIZE)
+
+        # bridge.c 里的全局槽位
+        self.mr_table = 0
+        self.dsm_funcs = 0
+        self.mr_c_function_P = 0
+        self.mr_extHelper_addr = 0
+        self.mr_c_event = 0
+        self.dsm_event = 0
+        self.start_dsm_param = 0
+
+        self.tables: dict[str, object] = {}
+        self.exited = False
+        self.exit_code = 0
+        self.instr_count = 0
+        self._codehook = None
+
+    # ------------------------------------------------------------ 内存
+    def _map_memory(self) -> None:
+        ptr = ctypes.addressof(self.mem._c_buf)
+        try:
+            self.uc.mem_map_ptr(START_ADDRESS, TOTAL_MEMORY, UC_PROT_ALL, ptr)
+            self.log(f"[vm] 共享内存映射完成 0x{START_ADDRESS:X}-0x{START_ADDRESS + TOTAL_MEMORY:X}")
+        except Exception as exc:  # pragma: no cover - 老版本 unicorn 回退
+            self.log(f"[vm] mem_map_ptr 不可用({exc})，回退到独立映射 + 手动同步")
+            self.uc.mem_map(START_ADDRESS, TOTAL_MEMORY, UC_PROT_ALL)
+            self._sync_mem = True
+        else:
+            self._sync_mem = False
+
+    def sync_in(self) -> None:
+        if getattr(self, "_sync_mem", False):
+            self.uc.mem_write(START_ADDRESS, bytes(self.mem.buf))
+
+    def sync_out(self) -> None:
+        if getattr(self, "_sync_mem", False):
+            self.mem.buf[:] = self.uc.mem_read(START_ADDRESS, TOTAL_MEMORY)
+
+    # ------------------------------------------------------------ 执行
+    def run_code(self, start: int, stop: int = STOP_ADDRESS, thumb: bool = False) -> None:
+        self.uc.reg_write(UC_ARM_REG_LR, stop)
+        begin = (start | 1) if thumb else start
+        self.sync_in()
+        try:
+            self.uc.emu_start(begin, stop, 0, 0)
+        except UcError as exc:
+            pc = self.uc.reg_read(UC_ARM_REG_PC)
+            self.log(f"[vm] 执行异常 {exc} @ PC=0x{pc:X}")
+            raise
+        finally:
+            self.sync_out()
+
+    def read_reg(self, reg: int) -> int:
+        return self.uc.reg_read(reg)
+
+    def dump_regs(self) -> str:
+        names = {
+            UC_ARM_REG_R0: "R0", UC_ARM_REG_R1: "R1", UC_ARM_REG_R2: "R2",
+            UC_ARM_REG_R3: "R3", UC_ARM_REG_SP: "SP", UC_ARM_REG_LR: "LR",
+            UC_ARM_REG_PC: "PC",
+        }
+        from unicorn.arm_const import UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6
+        from unicorn.arm_const import UC_ARM_REG_R7, UC_ARM_REG_R8, UC_ARM_REG_R9
+        from unicorn.arm_const import UC_ARM_REG_R10, UC_ARM_REG_R11, UC_ARM_REG_R12
+        names.update({
+            UC_ARM_REG_R4: "R4", UC_ARM_REG_R5: "R5", UC_ARM_REG_R6: "R6",
+            UC_ARM_REG_R7: "R7", UC_ARM_REG_R8: "R8", UC_ARM_REG_R9: "R9",
+            UC_ARM_REG_R10: "R10", UC_ARM_REG_R11: "R11", UC_ARM_REG_R12: "R12",
+        })
+        parts = [f"{n}=0x{self.uc.reg_read(r):08X}" for r, n in names.items()]
+        return " ".join(parts)
+
+    # ------------------------------------------------------------ 加载
+    def load_code(self, path: str | Path) -> bool:
+        p = Path(path)
+        if not p.is_file():
+            self.log(f"[vm] 找不到 {p}")
+            return False
+        data = p.read_bytes()
+        if len(data) > 1024 * 1024:
+            self.log(f"[vm] {p.name} 超过 1MB 代码段上限（{len(data)} 字节）")
+            return False
+        self.mem.write(CODE_ADDRESS, data)
+        self.log(f"[vm] 已加载 {p.name} -> 0x{CODE_ADDRESS:X} ({len(data)} 字节)")
+        return True
+
+    # ------------------------------------------------------------ 两张表
+    def install_tables(self, mr_table_funcs, dsm_funcs) -> None:
+        from .bridge import BridgeTable
+
+        t1 = BridgeTable("mr_table", mr_table_funcs, size=len(mr_table_funcs) * 4)
+        self.mr_table = t1.install(self)
+        self.tables["mr_table"] = t1
+
+        # DSM_REQUIRE_FUNCS 结构体：0xc8 处是 flags，末尾对齐到 0xd4
+        t2 = BridgeTable("dsm", dsm_funcs, size=0xD8)
+        self.dsm_funcs = t2.install(self)
+        self.tables["dsm"] = t2
+
+        # 平台参数：文件系统 GBK，编辑框走 UTF-8（与 vmrp 的 win32 分支一致）
+        from .consts import FLAG_USE_UTF8_EDIT
+        self.mem.set_u32(self.dsm_funcs + 0xC8, FLAG_USE_UTF8_EDIT)
+
+        self.mr_c_event = self.mem.malloc(12)
+        self.dsm_event = self.mem.malloc(12)
+        self.start_dsm_param = self.mem.malloc(12)
+        self.mem.memset(self.start_dsm_param, 0, 12)
+
+        self.log(
+            f"[vm] mr_table@0x{self.mr_table:X} ({len(mr_table_funcs)} 项) | "
+            f"dsm_require_funcs@0x{self.dsm_funcs:X} ({len(dsm_funcs)} 项)"
+        )
+
+    # ------------------------------------------------------------ ext 初始化
+    def ext_init(self) -> None:
+        """bridge_ext_init：执行 cfunction.ext 的 mr_c_function_load()。"""
+        self.mem.set_u32(CODE_ADDRESS, self.mr_table)
+        self.uc.reg_write(UC_ARM_REG_R0, 1)   # 1 = 使用 mr_extHelper
+        self.run_code(CODE_ADDRESS + 8, CODE_ADDRESS, thumb=False)
+        r9 = self.read_r9()
+        self.log(
+            f"[vm] mr_extHelper@0x{self.mr_extHelper_addr:X} | "
+            f"mr_c_function_P@0x{self.mr_c_function_P:X} | r9(SB)=0x{r9:X}"
+        )
+
+    # ------------------------------------------------------------ r9 / SB
+    #
+    # r9 是 ARM 的 sb（静态基址寄存器），在 MRP 体系里指向「当前 ext 模块的
+    # 全局变量区」（mr_c_function_P->start_of_ER_RW）。
+    #
+    # 切换这件事本身由 ext 自己完成：ext 内部的 asm_* 汇编桩会在每次跨层调用
+    # 前后 setR9/setR10 切过去再切回来（见 mythroad/fixR9.c）。
+    # 宿主的责任只有两条：
+    #   1) 把 mr_c_function_P 写到 CODE_ADDRESS+4 —— ext 靠这个位置找回上一级
+    #      的 P（fixR9.c 里的 C_FUNCTION_P() = *(mr_c_function_load - 4)）；
+    #   2) 凡是从宿主直接跳进 ARM 的回调路径，手动保存/改写/恢复 r9
+    #      （vmrp 的 bridge_dsm_network_cb 就是这么做的）。
+    #
+    # 实测（tests/r9_trace.py）：ARM 执行期间 r9 恒等于 P->ER_RW，宿主不需要干预。
+
+    def read_r9(self) -> int:
+        return self.uc.reg_read(UC_ARM_REG_R9)
+
+    def write_r9(self, value: int) -> None:
+        self.uc.reg_write(UC_ARM_REG_R9, value)
+
+    def sb_of_ext(self) -> int:
+        """当前 ext 的 RW 段基址（即 ext 内应设置的 r9 值）。"""
+        if not self.mr_c_function_P:
+            return 0
+        return self.mem.u32(self.mr_c_function_P)
+
+    def ext_helper(self, code: int, input_addr: int, input_len: int) -> int:
+        """bridge_mr_extHelper：把事件喂给 ARM 侧的 helper 函数。
+
+        r9 由 ext 侧自行切换；这里只在进出时做一次保存/恢复，
+        防止 ext 内部异常退出时把中间态的 r9 泄漏给下一次调用。
+        """
+        uc = self.uc
+        r9_saved = uc.reg_read(UC_ARM_REG_R9)
+        uc.reg_write(UC_ARM_REG_R0, self.mr_c_function_P)
+        uc.reg_write(UC_ARM_REG_R1, code)
+        uc.reg_write(UC_ARM_REG_R2, input_addr)
+        uc.reg_write(UC_ARM_REG_R3, input_len)
+        try:
+            self.run_code(self.mr_extHelper_addr, CODE_ADDRESS, thumb=False)
+            return uc.reg_read(UC_ARM_REG_R0)
+        finally:
+            uc.reg_write(UC_ARM_REG_R9, r9_saved)
+
+    def call_arm(self, addr: int, p0: int = 0, p1: int = 0, p2: int = 0) -> int:
+        """从宿主直接跳进 ARM 回调（对应 vmrp 的 bridge_dsm_network_cb）。
+
+        这条路径不经过 mr_extHelper，ARM 侧没有机会自己设置 r9，
+        因此必须先把 r9 切到 ext 的 SB，调用完再恢复原值。
+        网络/异步回调、宿主触发的 direct callback 都应走这里。
+        """
+        uc = self.uc
+        r9_saved = uc.reg_read(UC_ARM_REG_R9)
+        uc.reg_write(UC_ARM_REG_R9, self.sb_of_ext())
+        uc.reg_write(UC_ARM_REG_R0, p0)
+        uc.reg_write(UC_ARM_REG_R1, p1)
+        uc.reg_write(UC_ARM_REG_R2, p2)
+        try:
+            self.run_code(addr, CODE_ADDRESS, thumb=False)
+            return uc.reg_read(UC_ARM_REG_R0)
+        finally:
+            uc.reg_write(UC_ARM_REG_R9, r9_saved)
+
+    def mr_event(self, code: int, p0: int, p1: int) -> int:
+        """bridge_mr_event：写 event_t 再调 helper。"""
+        self.mem.set_u32(self.mr_c_event + 0, code)
+        self.mem.set_u32(self.mr_c_event + 4, p0)
+        self.mem.set_u32(self.mr_c_event + 8, p1)
+        r = self.ext_helper(1, self.mr_c_event, 12)
+        return struct.unpack("<i", struct.pack("<I", r & 0xFFFFFFFF))[0]
+
+    # ------------------------------------------------------------ 生命周期
+    def dsm_init(self) -> bool:
+        v = self.mr_event(DSM_INIT, self.dsm_funcs, 0)
+        if v == VMRP_VER:
+            self.log(f"[vm] DSM_INIT 握手成功 (ver={v})")
+            return True
+        self.log(f"[vm] DSM_INIT 版本不匹配：得到 {v}，期望 {VMRP_VER}")
+        return False
+
+    def start_dsm(self, filename: str, ext: str = "cfunction.ext", entry: str | None = None) -> int:
+        mem = self.mem
+        p_filename = self._copy_str(filename)
+        p_ext = self._copy_str(ext)
+        p_entry = self._copy_str(entry) if entry else 0
+
+        mem.set_u32(self.start_dsm_param + 0, p_filename)
+        mem.set_u32(self.start_dsm_param + 4, p_ext)
+        mem.set_u32(self.start_dsm_param + 8, p_entry)
+
+        v = self.mr_event(MR_START_DSM, self.start_dsm_param, 0)
+
+        for p in (p_filename, p_ext, p_entry):
+            if p:
+                mem.free(p)
+        return v
+
+    def _copy_str(self, text: str) -> int:
+        raw = text.encode("gbk", errors="replace") + b"\x00"
+        p = self.mem.malloc(len(raw))
+        if p:
+            self.mem.write(p, raw)
+        return p
+
+    # ------------------------------------------------------------ 事件
+    def event(self, code: int, p0: int, p1: int) -> int:
+        self.mem.set_u32(self.dsm_event + 0, code)
+        self.mem.set_u32(self.dsm_event + 4, p0)
+        self.mem.set_u32(self.dsm_event + 8, p1)
+        return self.mr_event(MR_EVENT, self.dsm_event, 0)
+
+    def timer(self) -> int:
+        return self.mr_event(MR_TIMER, 0, 0)
+
+    def key_event(self, key: int, pressed: bool) -> int:
+        from .consts import MR_KEY_PRESS, MR_KEY_RELEASE
+        return self.event(MR_KEY_PRESS if pressed else MR_KEY_RELEASE, key, 0)
+
+    def touch_event(self, kind: int, x: int, y: int) -> int:
+        """发送触摸事件（MR_MOUSE_DOWN / UP / MOVE），坐标为 MRP 屏幕坐标。
+
+        注意：绝大多数 2008 年的 MTK 应用不处理触摸事件，发了也不会回应。
+        要「点屏幕就有反应」请用 ui.tap_to_key() 把它翻译成按键。
+        """
+        from .consts import MR_MOUSE_DOWN, MR_MOUSE_MOVE, MR_MOUSE_UP
+        if kind not in (MR_MOUSE_DOWN, MR_MOUSE_UP, MR_MOUSE_MOVE):
+            raise ValueError(f"不是触摸事件码: {kind}")
+        return self.event(kind, x, y)
+
+    def exit_dsm(self) -> None:
+        self.exited = True

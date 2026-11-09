@@ -1,0 +1,861 @@
+"""MRP API 实现。
+
+命名与 mr_table / dsm_require_funcs 里的条目一一对应，注册进 IMPL 表后由
+mrtable.py / dsmfuncs.py 按名字绑定到槽位。
+
+约定：每个实现收到 (ctx: ArmCall, vm: Vm)，用 ctx.arg(n) 取参数、
+ctx.ret(v) 设返回值。ctx.mem 是 8MB 模拟内存，vm.app 是宿主应用。
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+
+from ..consts import (
+    DEVICE_MODEL,
+    DEVICE_VENDOR,
+    IMEI,
+    MR_FAILED,
+    MR_FILE_CREATE,
+    MR_FILE_RDONLY,
+    MR_FILE_RDWR,
+    MR_FILE_WRONLY,
+    MR_KEY_PRESS,
+    MR_KEY_RELEASE,
+    MR_NO_EXIST,
+    MR_SUCCESS,
+    MR_WAITING,
+    SCREEN_BPP,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+)
+
+IMPL: dict[str, callable] = {}
+
+
+def api(*names: str):
+    def deco(fn):
+        for n in names:
+            IMPL[n] = fn
+        return fn
+    return deco
+
+
+def get(name: str):
+    return IMPL.get(name)
+
+
+# ==================================================================== 工具
+def _s(ctx, i: int) -> str:
+    return ctx.mem.cstr(ctx.arg(i))
+
+
+_MAX_BLOB = 8 << 20          # 8MB，正好是整块模拟内存的上限
+
+
+def _read_blob(vm, addr: int, length: int) -> bytes:
+    """从模拟内存里安全地取一段数据。
+
+    MRP 传进来的长度经常不可信（未初始化、按 0 取反、故意喂假值），
+    所以一律先验地址、再把长度 clamp 到内存末尾，宁可少读也不越界。
+    """
+    mem = vm.mem
+    n = int(length)
+    if not addr or n <= 0:
+        return b""
+    if not mem.valid(addr, 1):
+        return b""
+    if n > _MAX_BLOB:
+        n = _MAX_BLOB
+    room = mem.base + mem.size - addr
+    n = min(n, room)
+    if n <= 0:
+        return b""
+    return mem.read(addr, n)
+
+
+def _fmt(fmt: str, args: list[int], mem) -> str:
+    """迷你 printf：够 MRP 用即可。"""
+    out: list[str] = []
+    i = 0
+    ai = 0
+    n = len(fmt)
+    while i < n:
+        c = fmt[i]
+        if c != "%":
+            out.append(c)
+            i += 1
+            continue
+        i += 1
+        if i >= n:
+            break
+        spec = ""
+        while i < n and fmt[i] in "-+ #0123456789.":
+            spec += fmt[i]
+            i += 1
+        if i >= n:
+            break
+        conv = fmt[i]
+        i += 1
+
+        if conv == "%":
+            out.append("%")
+            continue
+        if conv == "n":
+            ai += 1
+            continue
+
+        raw = args[ai] if ai < len(args) else 0
+        ai += 1
+        if conv == "s":
+            out.append(mem.cstr(raw) if raw else "(null)")
+        elif conv == "c":
+            out.append(chr(raw & 0xFF))
+        elif conv in "di":
+            v = raw - 0x100000000 if raw & 0x80000000 else raw
+            out.append(_pad(spec, str(v)))
+        elif conv == "u":
+            out.append(_pad(spec, str(raw & 0xFFFFFFFF)))
+        elif conv in "xX":
+            v = raw & 0xFFFFFFFF
+            s = f"{v:x}" if conv == "x" else f"{v:X}"
+            out.append(_pad(spec, s))
+        elif conv in "lL":
+            # %ld 之类已经在 spec 扫描时被吃掉 l，这里兜底
+            out.append(_pad(spec, str(raw)))
+        else:
+            out.append("%" + spec + conv)
+    return "".join(out)
+
+
+def _pad(spec: str, text: str) -> str:
+    if not spec:
+        return text
+    zero = spec.startswith("0")
+    width = "".join(ch for ch in spec if ch.isdigit())
+    w = int(width) if width else 0
+    if len(text) >= w:
+        return text
+    fill = "0" if zero else " "
+    return text.rjust(w, fill)
+
+
+# ==================================================================== 内存
+@api("mr_malloc")
+def mr_malloc(ctx, vm):
+    ctx.ret(ctx.mem.malloc(ctx.arg(0)))
+
+
+@api("mr_free")
+def mr_free(ctx, vm):
+    ctx.mem.free(ctx.arg(0))
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_realloc")
+def mr_realloc(ctx, vm):
+    mem = ctx.mem
+    p, new_len = ctx.arg(0), ctx.arg(1)
+    if not p:
+        ctx.ret(mem.malloc(new_len))
+        return
+    old = mem.heap.used.get(p, 0)
+    if new_len <= old:
+        ctx.ret(p)
+        return
+    np_ = mem.malloc(new_len)
+    if np_:
+        mem.write(np_, mem.read(p, min(old, new_len)))
+        mem.free(p)
+    ctx.ret(np_)
+
+
+@api("memcpy")
+def memcpy(ctx, vm):
+    dst, src, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    if n:
+        ctx.mem.write(dst, ctx.mem.read(src, n))
+    ctx.ret(dst)
+
+
+@api("memmove")
+def memmove(ctx, vm):
+    memcpy(ctx, vm)
+
+
+@api("memset")
+def memset(ctx, vm):
+    dst, c, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    ctx.mem.memset(dst, c, n)
+    ctx.ret(dst)
+
+
+@api("memcmp")
+def memcmp(ctx, vm):
+    a, b, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    x, y = ctx.mem.read(a, n), ctx.mem.read(b, n)
+    ctx.ret(0 if x == y else (1 if x > y else -1 & 0xFFFFFFFF))
+
+
+@api("memchr")
+def memchr(ctx, vm):
+    p, ch, n = ctx.arg(0), ctx.arg(1) & 0xFF, ctx.arg(2)
+    off = ctx.mem.read(p, n).find(bytes([ch]))
+    ctx.ret(p + off if off >= 0 else 0)
+
+
+@api("strlen")
+def strlen(ctx, vm):
+    raw = ctx.mem.cstr_bytes(ctx.arg(0))
+    ctx.ret(len(raw))
+
+
+@api("strcpy")
+def strcpy(ctx, vm):
+    dst, src = ctx.arg(0), ctx.arg(1)
+    ctx.mem.put_cstr(dst, ctx.mem.cstr(src))
+    ctx.ret(dst)
+
+
+@api("strncpy")
+def strncpy(ctx, vm):
+    dst, src, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    raw = ctx.mem.cstr_bytes(src)[:n]
+    ctx.mem.write(dst, raw + b"\x00" * ((n if n else 1) - len(raw)))
+    ctx.ret(dst)
+
+
+@api("strcat")
+def strcat(ctx, vm):
+    dst, src = ctx.arg(0), ctx.arg(1)
+    base = ctx.mem.cstr_bytes(dst)
+    ctx.mem.put_cstr(dst + len(base), ctx.mem.cstr(src))
+    ctx.ret(dst)
+
+
+@api("strncat")
+def strncat(ctx, vm):
+    strcat(ctx, vm)
+
+
+@api("strcmp")
+def strcmp(ctx, vm):
+    a, b = ctx.mem.cstr_bytes(ctx.arg(0)), ctx.mem.cstr_bytes(ctx.arg(1))
+    ctx.ret(0 if a == b else (1 if a > b else 0xFFFFFFFF))
+
+
+@api("strncmp")
+def strncmp(ctx, vm):
+    n = ctx.arg(2)
+    a, b = ctx.mem.cstr_bytes(ctx.arg(0))[:n], ctx.mem.cstr_bytes(ctx.arg(1))[:n]
+    ctx.ret(0 if a == b else (1 if a > b else 0xFFFFFFFF))
+
+
+@api("strcoll")
+def strcoll(ctx, vm):
+    strcmp(ctx, vm)
+
+
+@api("strstr")
+def strstr(ctx, vm):
+    hay_p, needle_p = ctx.arg(0), ctx.arg(1)
+    hay = ctx.mem.cstr_bytes(hay_p)
+    needle = ctx.mem.cstr_bytes(needle_p)
+    idx = hay.find(needle)
+    ctx.ret(hay_p + idx if idx >= 0 else 0)
+
+
+@api("sprintf")
+def sprintf(ctx, vm):
+    dst = ctx.arg(0)
+    fmt = ctx.mem.cstr(ctx.arg(1))
+    nargs = max(0, fmt.count("%") - fmt.count("%%") * 2)
+    args = [ctx.arg(2 + i) for i in range(max(nargs, 0))]
+    text = _fmt(fmt, args, ctx.mem)
+    ctx.mem.put_cstr(dst, text)
+    ctx.ret(len(text))
+
+
+@api("atoi")
+def atoi(ctx, vm):
+    s = ctx.mem.cstr(ctx.arg(0)).strip()
+    num = ""
+    for ch in s:
+        if ch in "-+" and not num:
+            num += ch
+        elif ch.isdigit():
+            num += ch
+        else:
+            break
+    try:
+        ctx.ret(int(num) & 0xFFFFFFFF if num not in ("", "-", "+") else 0)
+    except ValueError:
+        ctx.ret(0)
+
+
+@api("strtoul")
+def strtoul(ctx, vm):
+    atoi(ctx, vm)
+
+
+@api("rand")
+def rand_(ctx, vm):
+    import random
+    ctx.ret(random.getrandbits(31))
+
+
+@api("srand")
+def srand_(ctx, vm):
+    import random
+    random.seed(ctx.arg(0))
+
+
+# ==================================================================== 字符串编码 / 数学
+@api("c2u")
+def c2u(ctx, vm):
+    """GBK -> UTF-8，返回目标缓冲。"""
+    src, dst = ctx.arg(0), ctx.arg(1)
+    text = ctx.mem.cstr(src)
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        raw = b""
+    ctx.mem.write(dst, raw + b"\x00")
+    ctx.ret(dst)
+
+
+@api("mr_wstrlen")
+def mr_wstrlen(ctx, vm):
+    n = 0
+    p = ctx.arg(0)
+    while ctx.mem.valid(p, 2) and ctx.mem.u16(p) != 0:
+        n += 1
+        p += 2
+    ctx.ret(n)
+
+
+@api("_mr_div")
+def mr_div(ctx, vm):
+    a, b = ctx.sarg(0), ctx.sarg(1)
+    ctx.ret(0 if b == 0 else int(a / b) & 0xFFFFFFFF)
+
+
+@api("_mr_mod")
+def mr_mod(ctx, vm):
+    a, b = ctx.sarg(0), ctx.sarg(1)
+    ctx.ret(0 if b == 0 else a % b)
+
+
+@api("mr_updcrc")
+def mr_updcrc(ctx, vm):
+    ctx.ret(ctx.arg(0))
+
+
+# ==================================================================== 图形
+@api("mr_drawBitmap")
+def mr_drawBitmap(ctx, vm):
+    """void mr_drawBitmap(uint16* bmp, int16 x, int16 y, uint16 w, uint16 h)"""
+    bmp = ctx.arg(0)
+    x = ctx.sarg(1)
+    y = ctx.sarg(2)
+    w = ctx.arg(3)
+    h = ctx.arg(4)
+    vm.app.gfx.draw_bitmap(bmp, x, y, w, h)
+
+
+@api("_DrawBitmap", "_DrawBitmapEx")
+def draw_bitmap_ex(ctx, vm):
+    mr_drawBitmap(ctx, vm)
+
+
+@api("_DrawPoint")
+def draw_point(ctx, vm):
+    x, y, color = ctx.sarg(0), ctx.sarg(1), ctx.arg(2)
+    vm.app.gfx.fill_rect(x, y, 1, 1, color & 0xFFFF)
+
+
+@api("DrawRect")
+def draw_rect(ctx, vm):
+    left, top, right, bottom, color = ctx.sarg(0), ctx.sarg(1), ctx.sarg(2), ctx.sarg(3), ctx.arg(4)
+    g = vm.app.gfx
+    g.fill_rect(left, top, right - left + 1, 1, color & 0xFFFF)
+    g.fill_rect(left, bottom, right - left + 1, 1, color & 0xFFFF)
+    g.fill_rect(left, top, 1, bottom - top + 1, color & 0xFFFF)
+    g.fill_rect(right, top, 1, bottom - top + 1, color & 0xFFFF)
+
+
+@api("_BitmapCheck")
+def bitmap_check(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_platDrawChar")
+def mr_platDrawChar(ctx, vm):
+    """让宿主用系统字体画一个字符：真机上由固件完成。"""
+    ctx.ret(MR_SUCCESS)
+
+
+@api("_DrawText", "_DrawTextEx")
+def draw_text(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+# ==================================================================== 时间 / 定时器
+@api("mr_timerStart")
+def mr_timerStart(ctx, vm):
+    vm.app.timer_start(ctx.arg(0))
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_timerStop")
+def mr_timerStop(ctx, vm):
+    vm.app.timer_stop()
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_getTime")
+def mr_getTime(ctx, vm):
+    ctx.ret(int(time.time()) & 0xFFFFFFFF)
+
+
+@api("mr_getDatetime")
+def mr_getDatetime(ctx, vm):
+    p = ctx.arg(0)
+    if p:
+        now = datetime.now()
+        mem = ctx.mem
+        mem.set_u16(p + 0, now.year)
+        mem.write(p + 2, bytes([now.month, now.day, now.hour, now.minute,
+                                now.second, (now.weekday() + 1) % 7]))
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_sleep")
+def mr_sleep(ctx, vm):
+    ms = ctx.arg(0)
+    if 0 < ms < 2000:
+        time.sleep(ms / 1000.0)
+    ctx.ret(MR_SUCCESS)
+
+
+@api("get_uptime_ms")
+def get_uptime_ms(ctx, vm):
+    ctx.ret(int(vm.app.uptime_ms()))
+
+
+# ==================================================================== 系统
+@api("mr_getScreenInfo")
+def mr_getScreenInfo(ctx, vm):
+    p = ctx.arg(0)
+    if p:
+        for i, v in enumerate((SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_BPP, 1, 0)):
+            ctx.mem.set_u32(p + i * 4, v)
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_getUserInfo")
+def mr_getUserInfo(ctx, vm):
+    p = ctx.arg(0)
+    if p:
+        ctx.mem.put_cstr(p + 0, "460000000000000")
+        ctx.mem.put_cstr(p + 16, IMEI)
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_plat")
+def mr_plat(ctx, vm):
+    """int32 mr_plat(int32 code, int32 param)
+
+    音频相关的两个 code（SKYENGINE 手册 mr_plat(102)/(103)）：最底层的
+    PCM 环形缓冲直写模式 —— 应用自己往内存里写 PCM，驱动只管播。
+    """
+    code = ctx.arg(0)
+    param = ctx.arg(1)
+    audio = getattr(vm.app, "audio", None)
+
+    if audio is not None:
+        if code == 102:                     # 告知驱动 PCM 写入数据的绝对地址
+            audio.ring_notify_write(param, vm.mem)
+            ctx.ret(MR_SUCCESS)
+            return
+        if code == 103:                     # 取已播放掉的数据的绝对地址
+            ctx.ret(audio.ring_played_ptr())
+            return
+        if code == 1302:                    # 设置播放音量（sky 音量等级）
+            level = max(0, min(15, param))
+            audio.volume = max(0.0, min(1.0, level / 15.0))
+            ctx.ret(MR_SUCCESS)
+            return
+
+    if code == 0x1000:      # MR_PLAT_VALUE
+        ctx.ret(0x1000)
+    else:
+        ctx.ret(MR_SUCCESS)
+
+
+@api("mr_platEx")
+def mr_platEx(ctx, vm):
+    """int32 mr_platEx(int32 code, uint8* input, int32 input_len,
+                       uint8** output, int32* output_len, MR_PLAT_EX_CB* cb)
+
+    音频族 201x-216x / 222x-225x 走 audio.media（流媒体播放器），
+    其余 code 交给原来的兜底逻辑。
+    """
+    code = ctx.arg(0)
+    input_addr = ctx.arg(1)
+    input_len = ctx.arg(2)
+    output_ptr = ctx.arg(3)
+    output_len_ptr = ctx.arg(4)
+    # ctx.arg(5) 是 MR_PLAT_EX_CB*，我们同步完成操作，不回异步回调
+
+    audio = getattr(vm.app, "audio", None)
+    if audio is not None:
+        result = audio.media.handle(
+            code, vm.mem, input_addr, input_len, output_ptr, output_len_ptr,
+            vm.app.fs,
+        )
+        if result is not None:
+            ctx.ret(result)
+            return
+
+    vm.app.log(f"[mr_platEx] code=0x{code:X}")
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_ferrno")
+def mr_ferrno(ctx, vm):
+    ctx.ret(0)
+
+
+@api("mr_exit")
+def mr_exit(ctx, vm):
+    vm.app.log("[mrp] 应用请求退出")
+    vm.exited = True
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_startShake")
+def mr_startShake(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_stopShake")
+def mr_stopShake(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_playSound")
+def mr_playSound(ctx, vm):
+    """int32 mr_playSound(int type, const void *data, uint32 dataLen, int32 loop)
+
+    与 mrporting.h 一致：data 是**模拟内存里的指针**，不是文件名 —— 应用
+    总是先把音频读进内存（mr_open+read，或直接嵌在代码段）再传指针过来。
+
+    type 见 MR_SOUND_TYPE：MIDI/WAV/MP3/PCM/M4A/AMR/AMR_WB。其中 PCM 是
+    分段流式推送，每次只给几十毫秒，由 audio.stream 攒块拼接。
+    """
+    stype = ctx.arg(0)
+    addr = ctx.arg(1)
+    length = ctx.arg(2)
+    loop = ctx.arg(3) != 0
+
+    audio = getattr(vm.app, "audio", None)
+    if audio is None:
+        ctx.ret(MR_SUCCESS)
+        return
+
+    data = _read_blob(vm, addr, length)
+    if not data and addr and length == 0:
+        # 极少数老实现会传 (type, "xxx.mid", 0, loop)：把 data 当路径。
+        # 只在长度明确为 0 时才走这条路，避免把真实音频数据误判成字符串。
+        name = vm.mem.cstr(addr, 260)
+        if name and name.lower().endswith((".mid", ".midi", ".imy", ".wav", ".mp3")):
+            try:
+                data = vm.app.fs.read_all(name)
+                vm.app.log(f"[audio] 以文件名方式读取 {name} ({len(data)}B)")
+            except Exception:
+                data = b""
+
+    ctx.ret(audio.play(stype, data, loop))
+
+
+@api("mr_stopSound")
+def mr_stopSound(ctx, vm):
+    """int32 mr_stopSound(int type)"""
+    audio = getattr(vm.app, "audio", None)
+    if audio is not None:
+        audio.stop(ctx.arg(0))
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_registerAPP")
+def mr_registerAPP(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_entry")
+def mr_entry(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+# ==================================================================== 文件
+@api("mr_open")
+def mr_open(ctx, vm):
+    name = _s(ctx, 0)
+    mode = ctx.arg(1)
+    fh = vm.app.fs.open(name, mode)
+    vm.app.log(f"[fs] open {name!r} mode=0x{mode:X} -> {fh}")
+    ctx.ret(fh)
+
+
+@api("mr_close")
+def mr_close(ctx, vm):
+    ctx.ret(vm.app.fs.close(ctx.arg(0)))
+
+
+@api("mr_read")
+def mr_read(ctx, vm):
+    f, p, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    data = vm.app.fs.read(f, n)
+    if data:
+        ctx.mem.write(p, data)
+    ctx.ret(len(data))
+
+
+@api("mr_write")
+def mr_write(ctx, vm):
+    f, p, n = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    ctx.ret(vm.app.fs.write(f, ctx.mem.read(p, n)))
+
+
+@api("mr_seek")
+def mr_seek(ctx, vm):
+    ctx.ret(vm.app.fs.seek(ctx.arg(0), ctx.sarg(1), ctx.arg(2)))
+
+
+@api("mr_getLen")
+def mr_getLen(ctx, vm):
+    ctx.ret(vm.app.fs.get_len(_s(ctx, 0)))
+
+
+@api("mr_info")
+def mr_info(ctx, vm):
+    ctx.ret(vm.app.fs.info(_s(ctx, 0)))
+
+
+@api("mr_remove")
+def mr_remove(ctx, vm):
+    ctx.ret(vm.app.fs.remove(_s(ctx, 0)))
+
+
+@api("mr_rename")
+def mr_rename(ctx, vm):
+    ctx.ret(vm.app.fs.rename(_s(ctx, 0), _s(ctx, 1)))
+
+
+@api("mr_mkDir")
+def mr_mkDir(ctx, vm):
+    ctx.ret(vm.app.fs.mkdir(_s(ctx, 0)))
+
+
+@api("mr_rmDir")
+def mr_rmDir(ctx, vm):
+    ctx.ret(vm.app.fs.rmdir(_s(ctx, 0)))
+
+
+@api("_mr_readFile")
+def mr_readFile(ctx, vm):
+    """int32 _mr_readFile(const char* name, uint8* buf, int32 len)"""
+    name, buf, length = _s(ctx, 0), ctx.arg(1), ctx.arg(2)
+    data = vm.app.fs.read_all(name)
+    if data is None:
+        ctx.ret(MR_FAILED)
+        return
+    data = data[:length]
+    ctx.mem.write(buf, data)
+    ctx.ret(len(data))
+
+
+@api("mr_findStart")
+def mr_findStart(ctx, vm):
+    """int32 mr_findStart(const char* name, char* buf, uint32 len)"""
+    name, buf = _s(ctx, 0), ctx.arg(1)
+    h, first = vm.app.fs.find_start(name, ctx.arg(2))
+    if h == MR_FAILED:
+        ctx.ret(MR_FAILED)
+        return
+    ctx.mem.put_cstr(buf, first or "")
+    ctx.ret(h)
+
+
+@api("mr_findGetNext")
+def mr_findGetNext(ctx, vm):
+    h, buf = ctx.arg(0), ctx.arg(1)
+    nxt = vm.app.fs.find_next(h)
+    if nxt is None:
+        ctx.ret(MR_NO_EXIST)
+        return
+    ctx.mem.put_cstr(buf, nxt)
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_findStop")
+def mr_findStop(ctx, vm):
+    ctx.ret(vm.app.fs.find_stop(ctx.arg(0)))
+
+
+# ==================================================================== 网络（占位）
+def _net_stub(ctx, vm):
+    ctx.ret(MR_FAILED)
+
+
+for _n in ("mr_initNetwork", "mr_closeNetwork", "mr_getHostByName", "mr_socket",
+           "mr_connect", "mr_closeSocket", "mr_recv", "mr_recvfrom", "mr_send",
+           "mr_sendto", "mr_getSocketState"):
+    IMPL[_n] = _net_stub
+
+
+# ==================================================================== 弹窗类（占位句柄）
+_dialog_seq = [1]
+
+
+@api("mr_dialogCreate")
+def mr_dialogCreate(ctx, vm):
+    _dialog_seq[0] += 1
+    ctx.ret(_dialog_seq[0])
+
+
+@api("mr_dialogRelease")
+def mr_dialogRelease(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_dialogRefresh")
+def mr_dialogRefresh(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_textCreate")
+def mr_textCreate(ctx, vm):
+    _dialog_seq[0] += 1
+    ctx.ret(_dialog_seq[0])
+
+
+@api("mr_textRelease")
+def mr_textRelease(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_textRefresh")
+def mr_textRefresh(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+_edit_texts: dict[int, str] = {}
+
+
+@api("mr_editCreate")
+def mr_editCreate(ctx, vm):
+    _dialog_seq[0] += 1
+    _edit_texts[_dialog_seq[0]] = ""
+    ctx.ret(_dialog_seq[0])
+
+
+@api("mr_editRelease")
+def mr_editRelease(ctx, vm):
+    _edit_texts.pop(ctx.arg(0), None)
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_editGetText")
+def mr_editGetText(ctx, vm):
+    h = ctx.arg(0)
+    text = vm.app.take_edit_text(h) or _edit_texts.get(h, "")
+    p = vm.app.scratch_str(text)
+    ctx.ret(p)
+
+
+# ==================================================================== 菜单/窗口（占位）
+for _n in ("mr_menuCreate", "mr_menuSetItem", "mr_menuShow", "mr_menuRelease",
+           "mr_menuRefresh", "mr_winCreate", "mr_winRelease", "mr_sendSms",
+           "mr_call", "mr_getNetworkID", "mr_connectWAP", "mr_unzip"):
+    IMPL[_n] = lambda ctx, vm: ctx.ret(MR_SUCCESS)
+
+
+# ==================================================================== md5（占位）
+@api("mr_md5_init")
+def mr_md5_init(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_md5_append")
+def mr_md5_append(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mr_md5_finish")
+def mr_md5_finish(ctx, vm):
+    p = ctx.arg(0)
+    if p:
+        ctx.mem.write(p, b"\x00" * 16)
+    ctx.ret(MR_SUCCESS)
+
+
+# ==================================================================== dsm 表专用
+@api("test")
+def dsm_test(ctx, vm):
+    ctx.ret(MR_SUCCESS)
+
+
+@api("log")
+def dsm_log(ctx, vm):
+    vm.app.log(f"[arm] {_s(ctx, 0)}")
+    ctx.ret(MR_SUCCESS)
+
+
+@api("exit")
+def dsm_exit(ctx, vm):
+    vm.app.log("[arm] exit()")
+    vm.exited = True
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mem_get")
+def dsm_mem_get(ctx, vm):
+    """int32 mem_get(char** mem_base, uint32* mem_len)"""
+    base_p, len_p = ctx.arg(0), ctx.arg(1)
+    size = 4 * 1024 * 1024
+    block = ctx.mem.malloc(size)
+    if not block:
+        ctx.ret(MR_FAILED)
+        return
+    ctx.mem.set_u32(base_p, block)
+    ctx.mem.set_u32(len_p, size)
+    vm.app.log(f"[dsm] mem_get -> 0x{block:X} ({size // 1024}KB)")
+    ctx.ret(MR_SUCCESS)
+
+
+@api("mem_free")
+def dsm_mem_free(ctx, vm):
+    ctx.mem.free(ctx.arg(0))
+    ctx.ret(MR_SUCCESS)
+
+
+@api("opendir")
+def dsm_opendir(ctx, vm):
+    ctx.ret(vm.app.fs.opendir(_s(ctx, 0)))
+
+
+@api("readdir")
+def dsm_readdir(ctx, vm):
+    name = vm.app.fs.readdir(ctx.arg(0))
+    if name is None:
+        ctx.ret(0)
+        return
+    ctx.ret(vm.app.scratch_str(name, slot="readdir", size=128))
+
+
+@api("closedir")
+def dsm_closedir(ctx, vm):
+    ctx.ret(vm.app.fs.closedir(ctx.arg(0)))

@@ -1,0 +1,85 @@
+# mr_platEx(1402) - 设置要显示的文件类型
+
+```c
+int32 mr_platEx (int32 code = 1402, uint8* input, int32 input_len, uint8** output, int32* output_len, MR_PLAT_EX_CB* cb )
+```
+
+## 说明
+
+设置要显示的文件类型（要浏览一类文件需要多次调用这个接口）。
+
+## 参数
+
+| 参数 | 说明 |
+|---|---|
+| input | *input 要显示的文件类型的宏值（见文件类型的宏值） |
+| input_len | 无 |
+| output | 无 |
+| output_len | 无 |
+| cb | 无 |
+
+## 返回值
+
+成功启动返回MR_SUCCESS,失败返回MR_FAILED，未实现返回MR_IGNORE.
+
+## 备注
+
+调用平台的浏览文件的功能，根据设置的筛选规则进行浏览，选择等操作；
+文件类型的宏值：
+1：MR_FMGR_TYPE_ALL
+2：MR_FMGR_TYPE_FOLDER
+3：MR_FMGR_TYPE_FOLDER_DOT
+4：MR_FMGR_TYPE_UNKNOW
+/*
+image
+*/
+5：MR_FMGR_TYPE_BMP
+6：MR_FMGR_TYPE_JPG
+7：MR_FMGR_TYPE_JPEG
+8：MR_FMGR_TYPE_GIF
+9：MR_FMGR_TYPE_PNG
+10：MR_FMGR_TYPE_EMS
+11：MR_FMGR_TYPE_ANM
+12：MR_FMGR_TYPE_WBMP
+13：MR_FMGR_TYPE_WBM
+/*
+audio
+*/
+14：MR_FMGR_TYPE_IMY
+15：MR_FMGR_TYPE_MID
+16：MR_FMGR_TYPE_MIDI
+17：MR_FMGR_TYPE_WAV
+18：MR_FMGR_TYPE_AMR
+19：MR_FMGR_TYPE_AAC
+20：MR_FMGR_TYPE_DAF
+21：MR_FMGR_TYPE_VM
+22：MR_FMGR_TYPE_AWB
+23：MR_FMGR_TYPE_AIF
+24：MR_FMGR_TYPE_AIFF
+25：MR_FMGR_TYPE_AIFC
+26：MR_FMGR_TYPE_AU
+27：MR_FMGR_TYPE_SND
+28：MR_FMGR_TYPE_M4A
+29：MR_FMGR_TYPE_MMF
+30：MR_FMGR_TYPE_WMA
+/*
+video
+*/
+31：MR_FMGR_TYPE_3GP
+32：MR_FMGR_TYPE_MP4
+33：MR_FMGR_TYPE_AVI
+/*
+others
+*/
+34：MR_FMGR_TYPE_JAD
+35：MR_FMGR_TYPE_JAR
+36：MR_FMGR_TYPE_VCF
+37：MR_FMGR_TYPE_VCS
+38：MR_FMGR_TYPE_THEME
+39：MR_FMGR_TYPE_MRP
+40：MR_FMGR_TYPE_NES
+41：MR_FMGR_TYPE_ZIP
+
+## 相关
+
+Copyright ?2005-20010 SKY-MOBI
