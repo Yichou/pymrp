@@ -94,7 +94,8 @@ python run.py --touch native             # 触摸坐标直通（默认）
 python mrp_emu.pyz                       # 单文件版（需先 python build_pyz.py）
 ```
 
-按键：方向键 / 回车=OK / F1,F2=软键 / Esc=挂机 / F12=截图。
+按键：方向键 / 回车=OK / **Ctrl=左软键、Alt=右软键**（F1,F2 为等价入口）/
+Esc=挂机 / F12=截图。Ctrl+Q 退出窗口，AltGr 与 Ctrl+Shift 等组合不会误触发软键。
 
 ## 6. 已知边界
 

@@ -21,12 +21,15 @@ import sys
 import time
 from pathlib import Path
 
-# 键盘 -> MRP 键名
+# 键盘 -> MRP 键名（对外说明用；实际按键转换在 _key_name()）
+# 左右软键各有三个入口：F1/F2 保留，Ctrl = 左软键、Alt = 右软键（双手握持更好按）
 KEYMAP = {
     "0": "0", "1": "1", "2": "2", "3": "3", "4": "4",
     "5": "5", "6": "6", "7": "7", "8": "8", "9": "9",
     "UP": "UP", "DOWN": "DOWN", "LEFT": "LEFT", "RIGHT": "RIGHT",
     "ENTER": "SELECT", "F1": "SOFT_L", "F2": "SOFT_R",
+    "LCTRL": "SOFT_L", "RCTRL": "SOFT_L",
+    "LALT": "SOFT_R", "RALT": "SOFT_R",
     "ESCAPE": "END", "BACKSPACE": "CLEAR",
     "ASTERISK": "*", "HASH": "#",
 }
@@ -439,6 +442,11 @@ def main(argv: list[str] | None = None) -> int:
                 running = False
             elif e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_q and (e.mod & pygame.KMOD_CTRL):
+                    # Ctrl 现在是左软键：退出前先释放可能按住的软键，
+                    # 免得给虚拟机/桌面留下一个没松开的按键状态。
+                    for src in (f"kb:{pygame.K_LCTRL}", f"kb:{pygame.K_RCTRL}"):
+                        if src in held:
+                            release_key(src)
                     running = False
                     continue
                 if e.key == pygame.K_F12:
@@ -571,7 +579,27 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _key_name(e) -> str | None:
+    """pygame 键盘事件 -> MRP 键名。
+
+    Ctrl(左右) = 左软键，Alt(左右) = 右软键，与 F1/F2 等价。
+    修饰键自身会产生 KEYDOWN/KEYUP，所以能正常支持长按软键。
+    """
     import pygame
+
+    mod = getattr(e, "mod", 0) or 0
+    ctrl_keys = (pygame.K_LCTRL, pygame.K_RCTRL)
+    alt_keys = (pygame.K_LALT, pygame.K_RALT)
+
+    if e.key in ctrl_keys or e.key in alt_keys:
+        is_ctrl = e.key in ctrl_keys
+        other = pygame.KMOD_ALT if is_ctrl else pygame.KMOD_CTRL
+        shift_gui = pygame.KMOD_SHIFT | getattr(pygame, "KMOD_GUI", 0)
+        # Windows 的 AltGr(右 Alt) 会同时注入 LCTRL+RALT，两边都带对方的
+        # 修饰位。若不当软键，避免一次按键触发左右软键两下。
+        # Ctrl+Shift / Alt+Shift 之类的系统组合也不当软键。
+        if mod & other or mod & shift_gui:
+            return None
+        return "SOFT_L" if is_ctrl else "SOFT_R"
 
     table = {
         pygame.K_0: "0", pygame.K_1: "1", pygame.K_2: "2", pygame.K_3: "3",

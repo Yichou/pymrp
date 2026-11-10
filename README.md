@@ -40,6 +40,18 @@ python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 > 完整接口契约与 RX 管理器崩溃复盘见
 > [docs/13 网络模块与内存健壮性](docs/13-网络模块与内存健壮性.md)。
 
+## 键位速记
+
+| 实体键 | 键盘 |
+|---|---|
+| 左软键 | **左 Ctrl**（或右 Ctrl / F1） |
+| 右软键 | **右 Alt**（或左 Alt / F2） |
+| OK / 方向 | 回车 / 方向键 |
+| 挂机回桌面 | Esc |
+| 截图 | F12 |
+
+> 详见 `mrp_emu/README.md` 键位表（含 AltGr / Ctrl+Q 的处理说明）。
+
 ## 文档入口
 
 **从 [docs/README.md](docs/README.md) 开始**。三分钟看懂这套系统 →
@@ -60,6 +72,7 @@ python tests/audio_probe.py    # 声音 70 项断言
 python tests/key_probe.py      # 按键/触摸
 python tests/launcher_probe.py # 启动界面 / 游戏中心 / 点击直达启动（35 项）
 python tests/net_probe.py      # 网络 57 项（TCP/UDP/DNS/cmwap/回调）+ RX 崩溃回归
+python tests/keymap_probe.py   # Ctrl/Alt 软键映射 37 项（含真实按键送达虚拟机）
 ```
 
 ## 资料声明

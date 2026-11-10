@@ -88,9 +88,28 @@ python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 python run.py --audio off                 # 静音运行
 python tests/selftest.py                  # 桥接自检
 python tests/audio_probe.py               # 音频自检（70 项）
-python tests/launcher_probe.py             # 桌面/列表/点击启动（34 项）
+python tests/launcher_probe.py             # 桌面/列表/点击启动（35 项）
+python tests/net_probe.py                  # 网络（57 项）+ RX 崩溃回归
+python tests/keymap_probe.py               # Ctrl/Alt 软键映射（37 项）
 python tools/midi2wav.py --demo           # 生成 out/demo_tone.wav 可直接试听
 ```
+
+## Ctrl / Alt 软键映射（2026-11-10）
+
+| 实体键 | 键盘 |
+|---|---|
+| 左软键 | **左 Ctrl** / 右 Ctrl / F1 |
+| 右软键 | **右 Alt** / 左 Alt / F2 |
+
+`cli.py::_key_name()` 把四个修饰键直接翻译成 `SOFT_L` / `SOFT_R`，
+与 F1/F2 走同一条 `press_key()` 链路，游戏里和系统桌面里都生效；
+修饰键自身有 KEYDOWN/KEYUP，长按软键也支持。
+
+防误触：Windows 的 AltGr（右 Alt 同时伪造一个左 Ctrl）、`Ctrl+Shift`、
+`Ctrl+Win` 组合一律不当软键；`Ctrl+Q` 退出窗口前会先释放按住的软键。
+`Alt+F4` / `Alt+Tab` 是系统级快捷键，会被 Windows 抢走，用 F2 代替。
+新增 `tests/keymap_probe.py` 37 项全过，含「真实 pygame 事件 → VM 收到
+左右软键 press/release」与桌面模式验证。
 
 ## 边界与说明
 
