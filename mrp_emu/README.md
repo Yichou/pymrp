@@ -184,8 +184,9 @@ mrp_emu/
 │   ├── mrtable.py     mr_table：146 个槽位，偏移与 vmrp 完全一致
 │   └── dsmfuncs.py    dsm_require_funcs：51 个槽位（mythroad 的平台接口）
 ├── ui/
-│   ├── skin.py        机身皮肤（JSON，可自定义机型）
-│   └── phone.py       MTK 直板机矢量绘制 + 键盘命中测试
+│   ├── skin.py        机身皮肤（JSON，可自定义机型；v2 扁平化导航区）
+│   ├── phone.py       MTK 直板机矢量绘制 + 键盘命中测试
+│   └── launcher.py    MTK 桌面 / 九宫格 / 游戏中心
 ├── cli.py             主循环
 └── tools/fetch_runtime.py
 ```
@@ -234,10 +235,14 @@ python tests/key_probe.py         # 按键与触摸
 python tests/net_probe.py         # 网络 57 项（回环 TCP/UDP/DNS/cmwap/回调）
 python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花屏回归）
 python tests/cookie_probe.py      # 曲奇 35 项（低地址映射/GBK 容错/短名/c2u/真实 300 帧）
+python tests/skin_probe.py        # 皮肤 48 项（导航区几何/配色采样/命中/按下态/旧 JSON 兼容）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出
 ```
+
+> 换机型外观编辑 `runtime/skin.json` 即可（几何/配色/键位全外置）；删掉该文件
+> 会自动重建默认皮肤。设计依据与自定义约束见 `docs/16-皮肤系统与导航区扁平化.md`。
 
 > 图形花屏排查用 `tests/rx_gfx_trace.py`：无窗口跑真实 RX 管理器，产出
 > `out/rx_trace_*_calls.txt`（全部桥接调用与 `drawBitmap` 参数）、

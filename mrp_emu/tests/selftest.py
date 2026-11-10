@@ -159,7 +159,7 @@ def main() -> int:
     app.gfx.text_center("MRP 模拟器", 120, 140, (240, 246, 255), size=20)
     app.gfx.soft_keys("选项", "返回")
     frame = ui.draw(app.gfx.surface())
-    check("画面尺寸正确", frame.get_size() == (300, 660), str(frame.get_size()))
+    check("画面尺寸正确", frame.get_size() == (ui.w, ui.h), str(frame.get_size()))
 
     out = ROOT / "out"
     out.mkdir(exist_ok=True)
@@ -167,10 +167,14 @@ def main() -> int:
     pygame.image.save(frame, str(shot))
     check("截图已生成", shot.is_file(), f"{shot} ({shot.stat().st_size} 字节)")
 
-    # 命中测试
-    hit_nav = ui.hit((150, 438))
-    hit_1 = ui.hit((70, 523)) if ui.keys else None
+    # 命中测试（坐标一律从皮肤几何推导，换机型不用改这里）
+    cx, cy, r = ui.nav["cx"], ui.nav["cy"], ui.nav["r"]
+    hit_nav = ui.hit((cx, cy))
     check("导航盘命中", hit_nav == "nav:SELECT", str(hit_nav))
+    check("导航上方向命中", ui.hit((cx, cy - int(r * 0.8))) == "nav:UP")
+    k1 = [k for k in ui.keys if k["label"] == "1"][0]
+    x, y, w, h = k1["rect"]
+    check("数字键 1 命中", ui.hit((x + w // 2, y + h // 2)) == k1["id"])
     k5 = [k for k in ui.keys if k["label"] == "5"][0]
     x, y, w, h = k5["rect"]
     check("数字键 5 命中", ui.hit((x + w // 2, y + h // 2)) == k5["id"])

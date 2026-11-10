@@ -28,11 +28,12 @@ mrp_emu/
 │   ├── media.py         mr_platEx(201x~225x) 状态机
 │   └── mixer.py         AudioEngine 门面 + md5 缓存
 └── ui/
-    ├── skin.py          JSON 皮肤加载
-    └── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通
+    ├── skin.py          JSON 皮肤加载（v2 扁平化导航区几何/配色）
+    ├── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通
+    └── launcher.py      MTK 桌面 / 九宫格 / 游戏中心（240x320）
 ```
 
-约 5400 行核心代码 + 1400 行测试。
+约 5500 行核心代码 + 1500 行测试。
 
 ## 2. API 覆盖度
 
@@ -88,6 +89,7 @@ pack_filename / start_filename                       当前包名与入口
 | `gfx_probe.py` | 21 | DSM 脏矩形 stride 语义 + RX 花屏回归 |
 | `net_probe.py` / `legacy_net_probe.py` | 57 / 51 | 回环网络、ARM 回调、DNS 覆写与 WAP 代理 |
 | `cookie_probe.py` | 35 | 低地址 ROM 映射 / GBK 容错 / 安全运行名 / c2u / 真实曲奇 300 帧 |
+| `skin_probe.py` | 48 | 导航区几何比例 / 逐像素配色采样 / 命中 / 按下态 / 旧皮肤 JSON 兼容 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。
 
@@ -128,5 +130,5 @@ Esc=挂机 / F12=截图。Ctrl+Q 退出窗口，AltGr 与 Ctrl+Shift 等组合�
 | 补一个 `mr_plat`/`mr_platEx` code | `api/impl.py` 的 `mr_plat`/`mr_platEx` 分支 + 对应手册页 |
 | 加音频格式 | `audio/mixer.py` 的 play 分发 + 魔数判定（注意 [08 §1.5](08-陷阱清单.md#15-mr_sound_type-两版枚举冲突)） |
 | 改键值映射 | `consts.py`（先读 [09 §4](09-常量速查.md#4-键值-️️最高危区)）+ 跑 `key_probe.py` |
-| 换机型外观 | `runtime/skin.json`（几何/配色全外置） |
+| 换机型外观 / 改导航键样式 | `runtime/skin.json`（几何/配色全外置）+ [16 §五](16-皮肤系统与导航区扁平化.md#五自定义皮肤) |
 | 解包改资源 | `tools/mrp_pack.py` + [03 包格式](03-MRP包格式规范.md) |

@@ -65,7 +65,7 @@ class PhoneUI:
             width=b.get("edge_width", 2), border_radius=b["radius"],
         )
         # 顶部高光
-        pygame.draw.line(surf, (120, 127, 138), (b["radius"], 1),
+        pygame.draw.line(surf, (88, 94, 104), (b["radius"], 1),
                          (self.w - b["radius"], 1), 1)
         return surf
 
@@ -86,6 +86,19 @@ class PhoneUI:
         return surf
 
     # ------------------------------------------------------------ 按键绘制
+    @staticmethod
+    def _arrow(surf: pygame.Surface, x: float, y: float, angle: float,
+               size: float, half: float, color) -> None:
+        """以 (x,y) 为中心画一个朝 angle 方向的实心等腰三角。"""
+        rad = math.radians(angle)
+        ux, uy = math.cos(rad), math.sin(rad)
+        px, py = -uy, ux
+        back = size * 0.45
+        tip = (x + size * ux, y + size * uy)
+        a = (x - back * ux + half * px, y - back * uy + half * py)
+        b = (x - back * ux - half * px, y - back * uy - half * py)
+        pygame.draw.polygon(surf, color, [tip, a, b])
+
     def _draw_key(self, surf: pygame.Surface, key: dict, active: bool) -> None:
         x, y, w, h = key["rect"]
         style = key.get("style", "num")
@@ -94,23 +107,28 @@ class PhoneUI:
         if style == "num":
             c1, c2 = pal["num_top"], pal["num_bottom"]
             text_color = pal["num_text"]
+            radius = pal.get("num_radius", 9)
         elif style == "soft":
             c1, c2 = pal["soft_top"], pal["soft_bottom"]
-            text_color = pal["num_sub"]
+            text_color = pal["soft_text"]
+            radius = pal.get("key_radius", 11)
         elif style == "send":
             c1, c2 = pal["send_top"], pal["send_bottom"]
-            text_color = (238, 250, 242)
+            text_color = pal["call_text"]
+            radius = pal.get("key_radius", 11)
         else:  # end
             c1, c2 = pal["end_top"], pal["end_bottom"]
-            text_color = (252, 238, 238)
+            text_color = pal["call_text"]
+            radius = pal.get("key_radius", 11)
 
         if active:
-            c1 = [min(255, int(v * 1.28) + 18) for v in c1]
-            c2 = [min(255, int(v * 1.18) + 12) for v in c2]
+            c1 = [min(255, int(v * 1.10) + 12) for v in c1]
+            c2 = [min(255, int(v * 1.08) + 10) for v in c2]
 
-        radius = 9 if style != "soft" else 12
+        # 扁平键面：极淡上下明暗，不再用黑描边
         surf.blit(self._grad(w, h, c1, c2, radius), (x, y))
-        pygame.draw.rect(surf, (18, 20, 24), (x, y, w, h), width=1, border_radius=radius)
+        pygame.draw.rect(surf, pal["key_edge"], (x, y, w, h),
+                         width=1, border_radius=radius)
 
         if style == "num":
             # 键盘背光轮廓
@@ -129,58 +147,54 @@ class PhoneUI:
                 s = f_small.render(sub, True, pal["num_sub"])
                 surf.blit(s, (x + (w - s.get_width()) // 2, y + h - 10))
         else:
-            f = get_font("microsoftyahei", 10)
+            f = get_font("microsoftyahei", 13)
             img = f.render(key["label"], True, text_color)
             surf.blit(img, (x + (w - img.get_width()) // 2, y + (h - img.get_height()) // 2))
 
         if active:
             pygame.draw.rect(
-                surf, pal["backlight"], (x + 1, y + 1, w - 2, h - 2),
-                width=2, border_radius=radius - 1,
+                surf, pal["press_glow"], (x + 2, y + 2, w - 4, h - 4),
+                width=1, border_radius=radius - 2,
             )
 
     def _draw_nav(self, surf: pygame.Surface, active_ids: set[str]) -> None:
+        """扁平大圆盘：淡渐变盘面 + 四向实心三角 + 中央实心 OK 圆。"""
         pal = self.palette
         cx, cy, r = self.nav["cx"], self.nav["cy"], self.nav["r"]
         hole = self.nav["hole"]
+        active = {k.split(":", 1)[1] for k in active_ids if k.startswith("nav:")}
 
-        # 外圈
-        pygame.draw.circle(surf, (24, 27, 32), (cx, cy), r + 2)
-        ring = self._grad(r * 2, r * 2, pal["nav_ring"],
-                          [c - 34 for c in pal["nav_ring"]], r)
-        surf.blit(ring, (cx - r, cy - r))
-        pygame.draw.circle(surf, (26, 29, 34), (cx, cy), r, 1)
+        # 盘面：上略亮下略暗，只留一圈极淡边界，不做金属环
+        face = self._grad(r * 2, r * 2,
+                          pal["nav_face_top"], pal["nav_face_bottom"], r)
+        surf.blit(face, (cx - r, cy - r))
+        pygame.draw.circle(surf, pal["nav_edge"], (cx, cy), r, 1)
 
-        # 内凹面
-        inner = self._grad(hole * 2, hole * 2, pal["nav_inner"],
-                           [max(0, c - 8) for c in pal["nav_inner"]], hole)
-        surf.blit(inner, (cx - hole, cy - hole))
-
-        # 四向箭头
+        # 四向箭头：距圆心 0.725r，与 OK 圆、盘沿都留足空隙
+        arrow_r = r * pal.get("arrow_radius", 0.725)
+        size = max(5.0, r * 0.12)
+        half = size * 0.62
         dirs = {
-            "UP": (cx, cy - r + 9, 0),
-            "DOWN": (cx, cy + r - 9, 180),
-            "LEFT": (cx - r + 9, cy, 270),
-            "RIGHT": (cx + r - 9, cy, 90),
+            "UP": (0.0, -arrow_r, -90.0),
+            "DOWN": (0.0, arrow_r, 90.0),
+            "LEFT": (-arrow_r, 0.0, 180.0),
+            "RIGHT": (arrow_r, 0.0, 0.0),
         }
-        active = {k.split(":")[1] for k in active_ids if k.startswith("nav:")}
-        for name, (ax, ay, angle) in dirs.items():
+        for name, (ox, oy, angle) in dirs.items():
             color = pal["highlight"] if name in active else pal["nav_arrow"]
-            size = 6
-            rad = math.radians(angle)
-            pts = [
-                (ax + size * math.cos(rad), ay + size * math.sin(rad)),
-                (ax + size * math.cos(rad + 2.5), ay + size * math.sin(rad + 2.5)),
-                (ax + size * math.cos(rad - 2.5), ay + size * math.sin(rad - 2.5)),
-            ]
-            pygame.draw.polygon(surf, color, pts)
+            self._arrow(surf, cx + ox, cy + oy, angle, size, half, color)
 
-        # 中央 OK
-        ok_active = "nav:SELECT" in active_ids
-        pygame.draw.circle(surf, pal["highlight"] if ok_active else (96, 103, 114),
-                           (cx, cy), hole - 4, 2)
-        f = get_font("arial", 8, bold=True)
-        img = f.render("OK", True, pal["nav_arrow"])
+        # 中央 OK：实心圆 + 淡边 + 浅色字
+        ok_active = "SELECT" in active
+        top, bottom = pal["ok_top"], pal["ok_bottom"]
+        if ok_active:
+            top = [min(255, int(v * 1.14) + 10) for v in top]
+            bottom = [min(255, int(v * 1.12) + 8) for v in bottom]
+        ok = self._grad(hole * 2, hole * 2, top, bottom, hole)
+        surf.blit(ok, (cx - hole, cy - hole))
+        pygame.draw.circle(surf, pal["ok_edge"], (cx, cy), hole, 1)
+        f = get_font("arial", max(9, int(hole * 0.55)), bold=True)
+        img = f.render("OK", True, pal["highlight"] if ok_active else pal["ok_text"])
         surf.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
     # ------------------------------------------------------------ 合成
