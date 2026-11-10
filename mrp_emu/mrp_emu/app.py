@@ -13,13 +13,15 @@ from .gfx import Gfx
 class App:
     def __init__(self, vm, workdir: str | Path, log=print,
                  audio: bool = True, sample_rate: int = 44100,
-                 pcm_rate: int = 8000) -> None:
+                 pcm_rate: int = 8000, audio_engine=None) -> None:
         self.vm = vm
         self.log = log
         self.fs = VirtualFs(workdir)
         self.gfx = Gfx(vm.mem)
-        self.audio = AudioEngine(sample_rate=sample_rate, enabled=audio,
-                                 log=log, pcm_rate=pcm_rate)
+        # 切换应用会重建 VM，但整机只有一个喇叭：音频引擎在多次会话间复用，
+        # 避免反复 pygame.mixer.init() 和缓存泄漏。
+        self.audio = audio_engine or AudioEngine(
+            sample_rate=sample_rate, enabled=audio, log=log, pcm_rate=pcm_rate)
 
         self.t0 = time.monotonic()
         self.timer_interval = 0

@@ -1,9 +1,22 @@
-"""命令行入口与主循环。"""
+"""命令行入口与主循环。
+
+三种运行形态：
+    python run.py                       启动 MTK 真机桌面（默认）
+    python run.py game.mrp              直接跑一个 MRP（跳过系统界面）
+    python run.py --boot gamecenter     开机直接进游戏中心（便于调试/截图）
+
+系统界面（Launcher）与 MRP 运行时共用同一个 240x320 屏幕：
+    mode = launcher -> 宿主画开机/待机/菜单/游戏中心，输入交给 Launcher
+    mode = mrp      -> 画 app.gfx.surface()，输入/触摸转给虚拟机
+    mode = demo     -> 没有 runtime 时的老演示画面
+从游戏中心点一个应用会**重建 VM**（干净状态）后 start_dsm()；挂机键回桌面。
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -24,10 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mrp_emu",
         description="MRP 模拟器（Python + Unicorn），UI 模拟 MTK 直板机",
     )
-    p.add_argument("mrp", nargs="?", help="要运行的 .mrp 文件")
+    p.add_argument("mrp", nargs="?", help="要直接运行的 .mrp 文件（给了就跳过系统桌面）")
     p.add_argument("--workdir", help="工作目录（存放 cfunction.ext 与 mythroad 资源）")
     p.add_argument("--runtime", help="cfunction.ext 路径，或包含它的目录")
-    p.add_argument("--ext", default="", help="mrp 内入口 ext 名；留空自动判断（启动器用 start.mr，普通应用用 cfunction.ext）")
+    p.add_argument("--ext", default="", help="mrp 内入口名；留空自动判断（包内通常有 start.mr）")
     p.add_argument("--skin", help="皮肤 JSON 路径")
     p.add_argument("--scale", type=float, default=0.0, help="界面缩放倍数，0=自动")
     p.add_argument("--headless", action="store_true", help="无窗口模式，渲染一帧后退出")
@@ -35,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", type=int, default=0, help="headless 模式渲染帧数（默认 1）")
     p.add_argument("--verbose", action="store_true", help="打印每次 API 调用")
     p.add_argument("--stats", action="store_true", help="退出时打印统计")
-    p.add_argument("--demo", action="store_true", help="强制演示模式（不加载 runtime）")
+    p.add_argument("--demo", action="store_true", help="强制演示模式（不加载 runtime、不进桌面）")
     p.add_argument(
         "--audio", choices=("auto", "on", "off"), default="auto",
         help="声音：auto=有音频设备就开、没有就静音降级（默认）；on=强制开；off=完全静音",
@@ -50,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="点屏幕的行为：native=把点击坐标用 mr_event(MR_MOUSE_*) 直接传给虚拟机（默认，"
              "与 vmrp 的 main.c 一致）；nav=翻译成方向键/确定（可选辅助）；off=不处理",
     )
+    p.add_argument(
+        "--boot", choices=("boot", "home", "menu", "gamecenter", "direct"),
+        help="开机画面：boot=开机动画(默认) / home=待机桌面 / menu=九宫格 / "
+             "gamecenter=游戏中心 / direct=直接跑 MRP。给了 mrp 位置时默认 direct",
+    )
+    p.add_argument("--proxy", help="在线列表用的 HTTP 代理，如 http://127.0.0.1:7890；"
+                                   "留空自动读系统代理并探测常见本地代理端口")
+    p.add_argument("--refresh", action="store_true", help="强制重新拉取在线列表（忽略本地 JSON 缓存）")
+    p.add_argument("--cache-days", type=int, default=7, help="在线列表缓存有效天数，默认 7")
     return p
 
 
@@ -109,7 +131,6 @@ def paint_demo(gfx, app, last_key: str) -> None:
         gfx.text_center(f"按键 {last_key}", w // 2, 250, (140, 230, 170), size=13)
 
     gfx.soft_keys("演示模式", "退出")
-    pygame_dummy = None  # noqa: F841
 
 
 # ---------------------------------------------------------------- 主程序
@@ -125,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     from .api.dsmfuncs import DSM_FUNCS
     from .api.mrtable import MR_TABLE
     from .app import App
+    from .audio.mixer import AudioEngine
+    from .catalog import Catalog, probe_entry_ext
     from .consts import KEY_NAME_TO_CODE
+    from .ui.launcher import Launcher
     from .ui.phone import PhoneUI
     from .ui.skin import load_skin
     from .vm import Vm
@@ -149,66 +173,168 @@ def main(argv: list[str] | None = None) -> int:
                 workdir = alt
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # ---------------- 皮肤与界面
     skin = load_skin(args.skin or (workdir / "skin.json"))
     ui = PhoneUI(skin)
-
-    # ---------------- 虚拟机
-    vm = Vm(log=log)
-    app = App(
-        vm, workdir, log=log,
-        audio=(args.audio != "off"),
-        sample_rate=args.audio_rate,
-        pcm_rate=args.pcm_rate,
-    )
-    vm.app = app
-    vm.install_tables(MR_TABLE, DSM_FUNCS)
-
-    for t in vm.tables.values():
-        t.verbose = args.verbose
-
-    if args.verbose:
-        missing = sorted({f.name for f in MR_TABLE if f.fn is None})
-        log(f"[api] 未实现槽位 {len(missing)} 项: {', '.join(missing[:12])}"
-            + (" ..." if len(missing) > 12 else ""))
-
-    # ---------------- 运行 MRP
     runtime = None if args.demo else find_runtime(workdir, args.runtime)
 
-    # 没指定 mrp 时，自动找启动器 dsm_gm.mrp —— 双击 run.bat 就能直接进应用列表
-    if runtime and mrp_path is None and not args.demo:
+    # ---------------- 启动形态
+    boot = args.boot or ("direct" if mrp_path else "boot")
+    direct = boot == "direct"
+    mode = "demo" if args.demo else ("mrp" if direct else "launcher")
+
+    if direct and not mrp_path and runtime:
         auto = workdir / "mythroad" / "dsm_gm.mrp"
         if not auto.is_file():
             found = sorted(workdir.rglob("dsm_gm.mrp"))
             auto = found[0] if found else None
         if auto and auto.is_file():
             mrp_path = auto
-            log(f"[vm] 未指定 mrp，自动使用启动器 {auto.relative_to(workdir)}")
+            log(f"[vm] direct 未指定 mrp，自动使用 {auto.relative_to(workdir)}")
 
-    ext_name = args.ext
-    if not ext_name:
-        ext_name = ("start.mr" if mrp_path and mrp_path.name.lower() == "dsm_gm.mrp"
-                    else "cfunction.ext")
+    # ---------------- 会话（VM 可重建，音频引擎整机唯一）
+    shared_audio = AudioEngine(
+        sample_rate=args.audio_rate, enabled=(args.audio != "off"),
+        log=log, pcm_rate=args.pcm_rate,
+    )
+
+    def new_session():
+        v = Vm(log=log)
+        a = App(v, workdir, log=log, audio=(args.audio != "off"),
+                sample_rate=args.audio_rate, pcm_rate=args.pcm_rate,
+                audio_engine=shared_audio)
+        v.app = a
+        v.install_tables(MR_TABLE, DSM_FUNCS)
+        for t in v.tables.values():
+            t.verbose = args.verbose
+        return v, a
+
+    vm, app = new_session()
     mrp_loaded = False
-    if runtime and mrp_path:
-        app.mrp_name = mrp_path.name
+    quit_requested = False
+
+    if args.verbose:
+        missing = sorted({f.name for f in MR_TABLE if f.fn is None})
+        log(f"[api] 未实现槽位 {len(missing)} 项: {', '.join(missing[:12])}"
+            + (" ..." if len(missing) > 12 else ""))
+
+    # ---------------- 系统桌面 / 在线目录
+    cat = None
+    launcher = None
+    if mode == "launcher":
+        cat = Catalog(workdir, proxy=args.proxy, log=log,
+                      ttl=max(0, args.cache_days) * 86400)
+        if args.refresh:
+            cat.start_refresh(force=True)     # Launcher 内的普通刷新会被 _refreshing 挡掉
+        launcher = Launcher(cat, log=log, start_page=boot)
+
+    def update_caption() -> None:
+        if pygame.display.get_surface() is None:
+            return
+        if mode == "mrp" and app.mrp_name:
+            title = f"MRP Emulator · {app.mrp_name}"
+        elif mode == "launcher":
+            title = f"PymRP · {skin['name']} · 游戏中心"
+        else:
+            title = f"MRP Emulator · {skin['name']}"
+        pygame.display.set_caption(title)
+
+    def ensure_in_mythroad(path: Path) -> Path:
+        """dsm 层默认在 <workdir>/mythroad/ 下找 mrp，不在那儿就复制一份。"""
+        folder = workdir / "mythroad"
+        folder.mkdir(parents=True, exist_ok=True)
+        if path.parent.resolve() == folder.resolve():
+            return path
+        dst = folder / path.name
+        if not dst.exists() or dst.stat().st_size != path.stat().st_size:
+            shutil.copy2(path, dst)
+            log(f"[catalog] 已放入运行环境 {dst.name}")
+        return dst
+
+    def back_to_home() -> None:
+        nonlocal mrp_loaded, mode
+        mrp_loaded = False
+        if launcher:
+            mode = "launcher"
+            launcher.go("home")
+            launcher.toast("已返回待机桌面")
+            update_caption()
+
+    def launch_path(path: Path, display: str | None = None) -> bool:
+        """重建 VM，加载并启动一个 MRP。"""
+        nonlocal vm, app, mrp_loaded, mode
+        if runtime is None:
+            if launcher:
+                launcher.toast("未找到 cfunction.ext，无法运行应用", 3)
+            log("[vm] 未找到 cfunction.ext，无法启动 MRP")
+            return False
         try:
-            vm.load_code(runtime)
-            vm.ext_init()
-            if vm.dsm_init():
-                r = vm.start_dsm(mrp_path.name, ext_name, None)
-                log(f"[vm] start_dsm('{mrp_path.name}', '{ext_name}') -> {r}")
-                mrp_loaded = r in (0, 1)
-                if not mrp_loaded:
-                    log("[vm] 启动返回值异常，请尝试 --ext start.mr 或改用启动器 dsm_gm.mrp")
+            target = ensure_in_mythroad(Path(path))
+        except OSError as exc:
+            if launcher:
+                launcher.toast(f"准备文件失败：{exc}", 3)
+            log(f"[vm] 准备文件失败: {exc}")
+            return False
+
+        ext = args.ext or probe_entry_ext(target)
+        v, a = new_session()
+        a.mrp_name = display or target.name
+        try:
+            v.load_code(runtime)
+            v.ext_init()
+            if not v.dsm_init():
+                raise RuntimeError("DSM_INIT 握手失败")
+            r = v.start_dsm(target.name, ext, None)
+            log(f"[vm] start_dsm('{target.name}', '{ext}') -> {r}")
+            if r not in (0, 1):
+                # 入口猜错时换另一个再试一次（必须是干净的 VM）
+                alt = "cfunction.ext" if ext == "start.mr" else "start.mr"
+                v2, a2 = new_session()
+                a2.mrp_name = a.mrp_name
+                v2.load_code(runtime)
+                v2.ext_init()
+                if v2.dsm_init():
+                    r2 = v2.start_dsm(target.name, alt, None)
+                    log(f"[vm] 换入口 '{alt}' 重试 -> {r2}")
+                    if r2 in (0, 1):
+                        v, a, ext, r = v2, a2, alt, r2
+            if r not in (0, 1):
+                raise RuntimeError(f"start_dsm 返回 {r}")
         except Exception as exc:  # noqa: BLE001
             log(f"[vm] 启动失败: {exc}")
             import traceback
             traceback.print_exc()
-    elif runtime and not mrp_path:
-        log("[vm] 只给了 runtime 没给 mrp，进入演示模式")
-    elif not runtime:
+            if launcher:
+                launcher.toast(f"启动失败：{str(exc)[:26]}", 3)
+                mode = "launcher"
+            return False
+
+        vm, app = v, a
+        mrp_loaded = True
+        mode = "mrp"
+        update_caption()
+        return True
+
+    if launcher:
+        def on_launch(item) -> None:
+            p = item.path or cat.find_local_file(item.file)
+            if not p:
+                launcher.toast("文件还没下载好，请稍候", 2)
+                return
+            launch_path(Path(p), item.label)
+
+        def on_exit() -> None:
+            nonlocal quit_requested
+            quit_requested = True
+
+        launcher.on_launch = on_launch
+        launcher.on_exit = on_exit
+
+    if direct and mrp_path and not args.demo:
+        if not launch_path(mrp_path):
+            mode = "demo"
+    elif direct and not runtime:
         log(f"[vm] 未找到 cfunction.ext（工作目录 {workdir}），进入演示模式")
+        mode = "demo"
 
     # ---------------- 窗口
     info = pygame.display.Info()
@@ -225,54 +351,80 @@ def main(argv: list[str] | None = None) -> int:
     win_w = int(skin["width"] * scale)
     win_h = int(skin["height"] * scale)
     screen = pygame.display.set_mode((win_w, win_h))
-    pygame.display.set_caption(
-        f"MRP Emulator · {skin['name']}" + (f" · {app.mrp_name}" if app.mrp_name else "")
-    )
+    update_caption()
     clock = pygame.time.Clock()
 
     # ---------------- 输入状态
     held: dict[str, str] = {}     # 来源 -> key id
     last_key_text = ""
+    pending_text = {"v": ""}     # KEYDOWN/TEXTINPUT 去重（中文 IME 兼容）
+    textinput_event = getattr(pygame, "TEXTINPUT", None)   # pygame 1 没有该事件
 
     def key_id_for(name: str) -> str | None:
         return ui.key_at_name(name)
 
+    def key_name_for(kid: str) -> str | None:
+        if kid.startswith("nav:"):
+            return kid.split(":", 1)[1]
+        for key in ui.keys:
+            if key["id"] == kid:
+                return key["key"]
+        return None
+
     def press_key(name: str, source: str) -> None:
         nonlocal last_key_text
         kid = key_id_for(name)
-        if kid is None:
-            return
-        if source in held:
+        if kid is None or source in held:
             return
         held[source] = kid
         ui.press(kid)
-        last_key_text = f"{name}"
-        code = KEY_NAME_TO_CODE.get(name)
-        if code is not None and mrp_loaded:
-            vm.key_event(code, True)
+        last_key_text = name
+        if mode == "mrp" and mrp_loaded:
+            if name == "END":                 # 挂机键：退出应用回待机桌面
+                back_to_home()
+                return
+            code = KEY_NAME_TO_CODE.get(name)
+            if code is not None:
+                vm.key_event(code, True)
+        elif launcher and mode == "launcher":
+            launcher.handle_key(name)
 
     def release_key(source: str) -> None:
         kid = held.pop(source, None)
         if kid is None:
             return
         ui.release(kid)
+        if mode != "mrp" or not mrp_loaded:
+            return
         for key in ui.keys:
             if key["id"] == kid:
                 code = KEY_NAME_TO_CODE.get(key["key"])
-                if code is not None and mrp_loaded:
+                if code is not None:
                     vm.key_event(code, False)
                 return
         if kid.startswith("nav:"):
             code = KEY_NAME_TO_CODE.get(kid.split(":", 1)[1])
-            if code is not None and mrp_loaded:
+            if code is not None:
                 vm.key_event(code, False)
+
+    def current_surface():
+        if mode == "mrp" and mrp_loaded:
+            return app.gfx.surface()
+        if mode == "launcher" and launcher:
+            return launcher.surface()
+        paint_demo(app.gfx, app, last_key_text)
+        return app.gfx.surface()
 
     # ---------------- 主循环
     running = True
     frames = 0
     max_frames = args.frames if args.headless and args.frames else (1 if args.headless else 0)
+    dt = 1.0 / 60
 
     while running:
+        if quit_requested:
+            running = False
+            break
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
@@ -285,14 +437,25 @@ def main(argv: list[str] | None = None) -> int:
                     out_dir.mkdir(parents=True, exist_ok=True)
                     shot_path = args.screenshot or str(
                         out_dir / f"shot_{time.strftime('%H%M%S')}.png")
-                    surface = (app.gfx.surface() if mrp_loaded
-                               else _demo_surface(app, last_key_text))
-                    pygame.image.save(ui.draw(surface), shot_path)
+                    pygame.image.save(ui.draw(current_surface()), shot_path)
                     log(f"[shot] 已保存 {shot_path}")
                     continue
+                uni = getattr(e, "unicode", "")
+                pending_text["v"] = ""
                 name = _key_name(e)
                 if name:
                     press_key(name, f"kb:{e.key}")
+                # 搜索框：普通字符从 KEYDOWN.unicode 拿，中文 IME 走 TEXTINPUT
+                if (launcher and mode == "launcher" and launcher.searching
+                        and uni and uni.isprintable() and uni not in ("*", "#", " ")):
+                    launcher.handle_text(uni)
+                    pending_text["v"] = uni
+            elif textinput_event is not None and e.type == textinput_event:
+                if launcher and mode == "launcher" and launcher.searching:
+                    txt = getattr(e, "text", "")
+                    if txt and txt != pending_text["v"]:
+                        launcher.handle_text(txt)
+                        pending_text["v"] = txt
             elif e.type == pygame.KEYUP:
                 name = _key_name(e)
                 if name:
@@ -304,62 +467,67 @@ def main(argv: list[str] | None = None) -> int:
                     last_key_text = kid
                     ui.press(kid)
                     held["mouse"] = kid
-                    code = ui.key_code(kid)
-                    if code is not None and mrp_loaded:
-                        vm.key_event(code, True)
+                    name = key_name_for(kid)
+                    if mode == "mrp" and mrp_loaded:
+                        if name == "END":
+                            back_to_home()
+                            continue
+                        code = ui.key_code(kid)
+                        if code is not None:
+                            vm.key_event(code, True)
+                    elif launcher and mode == "launcher" and name:
+                        launcher.handle_key(name)
                 else:
                     sp = ui.screen_pos(pos)
-                    if sp and mrp_loaded and args.touch != "off":
+                    if not sp:
+                        continue
+                    if mode == "mrp" and mrp_loaded and args.touch != "off":
                         if args.touch == "native":
-                            # 与 vmrp 的 main.c 一致：坐标原样送进虚拟机
                             from .consts import MR_MOUSE_DOWN
                             vm.touch_event(MR_MOUSE_DOWN, *sp)
                             held["screen"] = "touch"
-                        else:  # nav：坐标翻译成方向键/确定（辅助模式）
+                        else:
                             name = ui.tap_to_key(*sp)
                             code = KEY_NAME_TO_CODE.get(name)
                             if code is not None:
                                 last_key_text = name
                                 vm.key_event(code, True)
                                 vm.key_event(code, False)
+                    elif launcher and mode == "launcher":
+                        launcher.handle_click(*sp)
             elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                 kid = held.pop("mouse", None)
                 releasing_touch = held.pop("screen", None) == "touch"
                 if kid:
                     ui.release(kid)
-                    code = ui.key_code(kid)
-                    if code is not None and mrp_loaded:
-                        vm.key_event(code, False)
+                    if mode == "mrp" and mrp_loaded:
+                        code = ui.key_code(kid)
+                        if code is not None:
+                            vm.key_event(code, False)
                 if releasing_touch and mrp_loaded:
                     from .consts import MR_MOUSE_UP
                     sp = ui.screen_pos((int(e.pos[0] / scale), int(e.pos[1] / scale)))
                     vm.touch_event(MR_MOUSE_UP, *(sp or (0, 0)))
-            elif e.type == pygame.MOUSEMOTION and mrp_loaded and args.touch == "native":
+            elif e.type == pygame.MOUSEMOTION and mrp_loaded and mode == "mrp" \
+                    and args.touch == "native":
                 if held.get("screen") == "touch":
                     sp = ui.screen_pos((int(e.pos[0] / scale), int(e.pos[1] / scale)))
                     if sp:
                         from .consts import MR_MOUSE_MOVE
                         vm.touch_event(MR_MOUSE_MOVE, *sp)
 
-        # 定时器
-        if mrp_loaded and app.timer_due():
+        # 定时器 / 后台任务
+        if mode == "mrp" and mrp_loaded and app.timer_due():
             try:
                 vm.timer()
             except Exception as exc:  # noqa: BLE001
                 log(f"[vm] timer 异常: {exc}")
-                mrp_loaded = False
+                back_to_home()
+        if launcher and mode == "launcher":
+            launcher.tick(dt)
+        shared_audio.tick()
 
-        # 音频：续投流式 PCM、推进流媒体播放器的状态机
-        app.audio.tick()
-
-        # 画面
-        if mrp_loaded:
-            gfx_surface = app.gfx.surface()
-        else:
-            paint_demo(app.gfx, app, last_key_text)
-            gfx_surface = app.gfx.surface()
-
-        frame = ui.draw(gfx_surface)
+        frame = ui.draw(current_surface())
         if scale != 1.0:
             frame = pygame.transform.smoothscale(frame, (win_w, win_h))
         screen.blit(frame, (0, 0))
@@ -368,33 +536,26 @@ def main(argv: list[str] | None = None) -> int:
         frames += 1
         if max_frames and frames >= max_frames:
             running = False
-
         if not args.headless:
-            clock.tick(60)
+            dt = clock.tick(60) / 1000.0
 
     # ---------------- 收尾
     if args.screenshot:
-        shot = ui.draw(app.gfx.surface() if mrp_loaded else _demo_surface(app, last_key_text))
-        pygame.image.save(shot, args.screenshot)
+        pygame.image.save(ui.draw(current_surface()), args.screenshot)
         log(f"[shot] 已保存 {args.screenshot}")
 
     if args.stats:
         log("\n--- 统计 ---")
         log(app.report())
-        log(app.audio.stats())
+        log(shared_audio.stats())
         for t in vm.tables.values():
             top = sorted(t.calls.items(), key=lambda kv: -kv[1])[:8]
             if top:
                 log(f"{t.name} 热点: " + ", ".join(f"{k}×{v}" for k, v in top))
 
-    app.audio.shutdown()
+    shared_audio.shutdown()
     pygame.quit()
     return 0
-
-
-def _demo_surface(app, last_key: str):
-    paint_demo(app.gfx, app, last_key)
-    return app.gfx.surface()
 
 
 def _key_name(e) -> str | None:

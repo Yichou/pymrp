@@ -56,23 +56,49 @@ WAVE=2、MP3=3、AMR=4、PCM=5），状态机与手册 `PLAY_STATE` 一致。
 - 实跑 `dsm_gm.mrp`：`start_dsm -> 0`，枚举 9 个游戏，read×214/seek×207，
   菜单界面截图正常。
 
+## MTK 真机桌面与游戏中心（2026-11-10）
+
+启动画面改成真正的 MTK 直板机系统界面：开机动画 → 待机桌面（信号/时钟/壁纸）
+→ 九宫格菜单 → 游戏中心图标 → ① 在线列表 / ② 本地列表 → 点一行直接开玩，
+挂机键回桌面。
+
+- **在线列表 664 个应用**：首次进后台拉 `vmrp.github.io/public/data.txt`
+  （站点自己从 MRP 里读出的标题/开发商/描述 NDJSON，362 KB）+ 目录清单，
+  落盘 `runtime/cache/online_index.json`，7 天缓存；不逐个下载上百 MB 的包。
+- **本地列表**：只读每个 `.mrp` 前 0xF0 字节解头（0x1C 标题 / 0x58 厂商 /
+  0x80 描述 / 0x44 appid），字段长度与官方 `.mpr` 编写指南逐字节吻合。
+- **一键启动**：在线项按需下载到 `runtime/mythroad/` → 重建干净 VM →
+  `start_dsm()`。实测下载的 `2048.mrp` 直接渲染出「开始游戏 / 退出游戏」菜单。
+- **重要纠错**：所有 MRP 入口都是 `start.mr`，此前「普通应用用
+  `cfunction.ext`」的结论是错的，传错会报 `exit de is nil / init failed`。
+  CLI 已改为读包内条目表自动判断并支持换入口重试（`docs/03 §9`）。
+- 网络自动读系统代理（Clash 7890），直连失败会探测常见本地代理端口。
+- 说明见 [docs/12](docs/12-启动界面与游戏中心.md)，自检
+  `tests/launcher_probe.py` 34 项全过（含真实点击 → 启动 → 挂机返回）。
+
 ## 使用
 
 ```bash
 pip install -r requirements.txt
 python tools/fetch_runtime.py             # 需联网，已下载过则用缓存
-python run.py runtime/mythroad/dsm_gm.mrp # 启动器菜单（方向键+OK 选择游戏）
-python run.py                             # 自动探测并进启动器
+python run.py                             # 开机 → 待机桌面 → 游戏中心
+python run.py --boot gamecenter            # 开机直接进游戏中心
+python run.py --refresh                    # 强制刷新在线索引
+python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 python run.py --audio off                 # 静音运行
 python tests/selftest.py                  # 桥接自检
 python tests/audio_probe.py               # 音频自检（70 项）
+python tests/launcher_probe.py             # 桌面/列表/点击启动（34 项）
 python tools/midi2wav.py --demo           # 生成 out/demo_tone.wav 可直接试听
 ```
 
 ## 边界与说明
 
-- 游戏类 mrp（box.mrp 等）需经启动器菜单打开，直接 start_dsm 会报
-  code=3006，这是斯凯包结构决定的（包内入口文件名不同），不是 bug。
+- 早期记录「游戏类 mrp 直接 start_dsm 会报 code=3006，必须经启动器」
+  **已被证伪**：真实原因是入口 ext 传错。现在 `box.mrp / tetris.mrp /
+  2048.mrp / 火柴谜题 / 丧尸杀戮` 等均可单文件直启，返回 0。
+- 部分 MRP 依赖包外资源（字库、插件、存档目录），缺失时只打 `[fs] 打开失败`
+  日志，多数仍能进主菜单。
 - 网络/MD5/短信类 API 为占位（返回失败不崩溃），需要时在
   `api/impl.py` 补实现。
 - 声音已完整实现三条通路，但 AMR/M4A/AAC 解码器不在范围内。
@@ -84,8 +110,8 @@ python tools/midi2wav.py --demo           # 生成 out/demo_tone.wav 可直接�
 - 源码已推送：**https://github.com/Yichou/pymrp.git**（main，362 文件 2.5 万行；
   ref//runtime//out 等版权物与大文件不入库，runtime 可用 fetch_runtime.py 重新获取）。
 - `docs/` 知识库：SKYENGINE 手册 288 页全文整理（`docs/api/` 逐页保真 +
-  `docs/api/topics/` 12 主题分册，零遗漏）+ 12 篇原理文档
-  （00 体系总览 → 11 实现对照），入口 `docs/README.md`。
+  `docs/api/topics/` 12 主题分册，零遗漏）+ 13 篇原理文档
+  （00 体系总览 → 12 启动界面与游戏中心），入口 `docs/README.md`。
 - **原创成果**：实测解出 MRP 包二进制格式（MRPG 头 / 条目表 / 独立 gzip 条目 /
   裸 RGB565 位图），并用「重打包 → 真实 mythroad 层加载渲染成功」闭环验证。
   工具 `mrp_emu/tools/mrp_pack.py` 支持 list/解包/替换重打包。

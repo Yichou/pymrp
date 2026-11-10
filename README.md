@@ -23,9 +23,17 @@ tools/     文档生成脚本（CHM → Markdown 管线）
 pip install -r mrp_emu/requirements.txt   # unicorn pygame numpy
 
 cd mrp_emu
-python tools/fetch_runtime.py             # 获取运行时（cfunction.ext + 字库 + 9 个游戏，需联网）
-python run.py                             # 启动器菜单（方向键 + 回车操作）
+python tools/fetch_runtime.py             # 获取运行时（cfunction.ext + 字库 + 游戏，需联网）
+python run.py                             # MTK 真机桌面 → 游戏中心 → 点列表直接玩
+python run.py --boot gamecenter            # 直接进游戏中心
+python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 ```
+
+> 首次进入游戏中心会在**后台**拉取在线索引（vmrp.github.io 的 664 个 MRP，
+> 含标题/开发商/描述），落盘成 `runtime/cache/online_index.json`；之后直接读缓存，
+> 7 天才刷新一次。点在线条目会按需下载单个包到 `runtime/mythroad/`，下完自动启动。
+> 本地列表扫描运行环境下所有 `.mrp`，只读每个文件的前 240 字节取元数据。
+> 详见 [docs/12 启动界面与游戏中心](docs/12-启动界面与游戏中心.md)。
 
 ## 文档入口
 
@@ -45,6 +53,7 @@ cd mrp_emu
 python tests/selftest.py       # ARM 执行 + 桥接链路
 python tests/audio_probe.py    # 声音 70 项断言
 python tests/key_probe.py      # 按键/触摸
+python tests/launcher_probe.py # 启动界面 / 游戏中心 / 点击直达启动（34 项）
 ```
 
 ## 资料声明

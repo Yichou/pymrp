@@ -22,20 +22,54 @@
 
 ## 2. 固定头（0x000 – 0x0EF）
 
-| 偏移 | 类型 | 实测值（dsm_gm / box） | 含义 | 置信 |
-|---|---|---|---|---|
-| 0x00 | char[4] | `MRPG` | 魔数 | A |
-| 0x04 | uint32 | 507 / 584 | **未确证**。两次样本均落在"条目表结束点附近"，但既不等于条目表长度也不等于数据区起点，与包内容相关。repack 时建议原样保留 | D |
-| 0x08 | uint32 | 41315 / 50434 | **文件总字节数**（两个样本都精确等于文件大小） | A |
-| 0x0C | uint32 | 240 / 240 | 屏幕宽度 | A |
-| 0x10 | char[12] | `dsm_gm.mr\0` / `box.mr\0` | 主程序名（包内 `.mr` 条目名） | A |
-| 0x1C | char[] GBK | `应用列表` / `推箱子` | 应用显示名（GBK 编码） | A |
-| 0x2C– | — | `00…00` | 保留区（观察为全 0） | D |
-| 0x40– | — | `01 01 …` | 标志序列（dsm_gm 观察到连续 `01`，box 为 MD5 样式的杂凑值）。**未确证**，repack 时原样复制 | D |
-| 0xF0 | — | — | 条目表起点 | A |
+> **2026-11 修订**：结合官方《mythroad 工程文件（mpr 文件）编写指南》与
+> vmrp.github.io 的 `public/data.txt`（664 条站点自建索引）交叉验证，
+> 原表里标"未确证"的字段已全部定位。字段长度与官方 `.mpr` 工程配置的
+> 上限**逐字节吻合**：`filename` 11 ASCII → 12 字节、`appname` 23 → 24、
+> `vendor` 39 → 40、`description` 63 → 64。
+
+| 偏移 | 类型 | 含义 | 置信 |
+|---|---|---|---|
+| 0x00 | char[4] | `MRPG` 魔数 | A |
+| 0x04 | uint32 | 条目表结束偏移 **- 8**；站点索引的 `FileStart = 0x04 + 8`。语义未确证，repack 时原样保留 | A(规律) / D(语义) |
+| 0x08 | uint32 | 文件总字节数 | A |
+| 0x0C | uint32 | 屏幕宽度（实测恒 240） | A |
+| 0x10 | char[12] | `filename`：应用在手机上保存时的名字，11 ASCII + NUL | A |
+| 0x1C | char[24] GBK | `appname` / DisplayName：应用列表里显示的名字 | A |
+| 0x34 | char[16] | `AuthStr`：认证串。builder ≥ 10002 有效；老包此处是 16 字节特征码 | A |
+| 0x44 | uint32 | `appid` | A |
+| 0x48 | uint32 | `version` | A |
+| 0x4C | uint32 | `flag` | A |
+| 0x50 | uint32 | `BuilderVersion`（10000 = 老 / 10002 = 新） | A |
+| 0x54 | uint32 | `Crc32`（老包恒 0） | A |
+| 0x58 | char[40] GBK | `vendor`：制造商，39 有效字符 + NUL | A |
+| 0x80 | char[64] GBK | `description`：应用描述，63 有效字符 + NUL | A |
+| 0xC0 | uint32 BE | `appid` 的大端副本 | A |
+| 0xC4 | uint32 BE | `version` 的大端副本 | A |
+| 0xC8 | uint32 | ScreenWidth（多数为 0） | B |
+| 0xCC | uint32 | ScreenHeight（多数为 0） | B |
+| 0xD0 | uint32 | Plat（0 / 1） | B |
+| 0xD4–0xEF | — | 保留 | D |
+| 0xF0 | — | 条目表起点 | A |
+
+**验证样例**（`10066_240320_rxhcl.mrp`，与 data.txt 逐字段一致）：
+
+```
+000  4D 52 50 47 00 02 00 00 E2 83 00 00 F0 00 00 00  MRPG............
+010  72 78 68 63 6C 00 ...          D0 A1 BB F0        rxhcl  小火...
+020  B2 F1 C0 EF B5 C4 B4 F3 C3 D5 CC E2 00 ...        柴里的大谜题
+030  00 00 00 00 37 65 31 32 33 38 34 66 64 00 ...    7e12384fd
+040  00 00 00 00 52 27 00 00 8A 00 00 00 01 00 00 00  appid=10066 ver=138
+050  12 27 00 00 0D B0 03 69 BA BC D6 DD CB B9 BF AD  builder/crc 杭州斯凯
+080  D0 A1 D0 A1 B5 C4 BB F0 B2 F1 B0 F4 C0 EF ...     描述（GBK）
+0C0  00 00 27 52 00 00 00 8A ...                      大端 appid/version
+```
 
 > repack 策略：`0x000–0x0EF` 整块原样保留，只更新 `0x08` 的总长度。
 > 实测这样做的包能被 mythroad 正常加载。
+>
+> 只读前 0xF0 字节就能拿到标题、开发商、描述、appid、版本 —— 游戏中心的
+> 本地列表就是这么建的，664 个文件也只需各自读 240 字节。
 
 ## 3. 条目表
 
@@ -134,12 +168,38 @@ helper ext，不是那个 331 KB 的主运行时。
 
 按失传风险排序：
 
-1. **`0x04` 字段语义**：两个样本值 507/584，与条目表长度、数据区起点都不吻合；
-2. **头部 `0x40` 起的标志序列**：dsm_gm 是 `01×12`，box 是 16 字节杂凑——
-   猜测是某种特征码或校验，未确证；
+1. **`0x04` 字段语义**：现已确认恒等于「条目表结束偏移 - 8」，站点索引的
+   `FileStart`（数据区起点）恰好等于 `0x04 + 8`（15 个样本零例外）。
+   为什么偏偏差 8 字节仍无解释，猜是 builder 把「条目表末项 + 两个 u32」
+   记成了长度基准；
+2. **老 builder(10000) 的 `0x34` 起 16 字节**：新包是 ASCII `AuthStr`，
+   老包是随机特征码（dsm_gm 为 `01×16`），用途未确证；
 3. **`.mr` 字节码指令集**：`1B "MRP"` 之后是长度表还是代码段，未系统分析
    （对模拟器实现不构成障碍，但对"重新编译 MRP"是死结）；
 4. **数据区里每个 gzip 前的 `uint32`**：与 csize 恒等，冗余存储的目的不明。
+
+## 9. `start.mr` 是通用入口（重要纠错）
+
+早期结论「`dsm_gm.mrp` 用 `start.mr`，普通应用用 `cfunction.ext`」是**错的**。
+
+实测（15 个本地样本 + 在线抽样）：**所有** MRP 包的条目表里都有 `start.mr`，
+且 `start_dsm(filename, "start.mr")` 全部返回 0；给普通应用传
+`cfunction.ext` 会报
+
+```
+[arm] cfunction.ext:1: invalid control char near `char(16)'
+[arm] exit de is nil!
+[arm] init failed
+[vm] start_dsm('box.mrp', 'cfunction.ext') -> -1
+```
+
+`cfunction.ext` 是**宿主运行时**（331 KB 裸 ARM 文件，加载到 0x80000），
+不是包内入口。`start.mr` 才是包内那段负责初始化的 mythroad 字节码。
+启动器 `dsm_gm.mrp` 内部再拉起子应用时由 DSM 层自行决定入口，与宿主无关。
+
+因此 `cli.py` 现在默认用 `probe_entry_ext()` 读条目表判断：有 `start.mr`
+就用它，遇到不含该条目的老包才退回 `cfunction.ext`；两种都失败时会用
+干净的 VM 换入口重试一次。
 
 ## 8. 解析器参考实现
 
