@@ -78,3 +78,17 @@ python tools/midi2wav.py --demo           # 生成 out/demo_tone.wav 可直接�
 - 声音已完整实现三条通路，但 AMR/M4A/AAC 解码器不在范围内。
 - 已实测注意：本机 `python` 命令是 3.13，依赖装在 3.12；`run.py` 会用
   当前解释器，若报缺依赖先 `pip install -r requirements.txt`。
+
+## Git 仓库与知识库（2026-11-10）✅
+
+- 源码已推送：**https://github.com/Yichou/pymrp.git**（main，362 文件 2.5 万行；
+  ref//runtime//out 等版权物与大文件不入库，runtime 可用 fetch_runtime.py 重新获取）。
+- `docs/` 知识库：SKYENGINE 手册 288 页全文整理（`docs/api/` 逐页保真 +
+  `docs/api/topics/` 12 主题分册，零遗漏）+ 12 篇原理文档
+  （00 体系总览 → 11 实现对照），入口 `docs/README.md`。
+- **原创成果**：实测解出 MRP 包二进制格式（MRPG 头 / 条目表 / 独立 gzip 条目 /
+  裸 RGB565 位图），并用「重打包 → 真实 mythroad 层加载渲染成功」闭环验证。
+  工具 `mrp_emu/tools/mrp_pack.py` 支持 list/解包/替换重打包。
+- 文档生成管线：`tools/extract_manual.py`（CHM→MD）与 `tools/build_docs.py`
+  （主题聚合），手册更新后可一键重生成。
+- 仓库 git 代理已固化 Clash 7890（local config），直接 git push 即可。
