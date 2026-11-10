@@ -314,15 +314,38 @@ def srand_(ctx, vm):
 # ==================================================================== 字符串编码 / 数学
 @api("c2u")
 def c2u(ctx, vm):
-    """GBK -> UTF-8，返回目标缓冲。"""
-    src, dst = ctx.arg(0), ctx.arg(1)
-    text = ctx.mem.cstr(src)
+    """GBK -> UCS-2 宽字符串（mr_table 槽位 1939）。
+
+    官方 ``mr/mr_gb2312.c`` 的签名是
+    ``unicode_char *c2u(const char *cp, int *err, int *size)``：
+    返回一块新分配的 ``uint16`` 数组，``*size`` 是**字节数**（含结尾 0）。
+    源码在小端机上手工交换过高低字节，因此内存布局是 UTF-16BE。
+
+    旧实现把它当成「写 UTF-8 到 arg1」：arg1 其实是 ``err`` 指针，
+    arg2 是 ``size`` 指针，返回值也不该是入参缓冲 —— 全错。
+    曲奇启动器没走这个槽位（实测 0 次调用），但其它调用该 API 的 MRP
+    会拿到野指针，故按官方语义修正。
+    """
+    cp, err_p, size_p = ctx.arg(0), ctx.arg(1), ctx.arg(2)
+    raw = ctx.mem.cstr_bytes(cp)
+    text = raw.decode("gbk", errors="replace")
     try:
-        raw = text.encode("utf-8")
-    except UnicodeEncodeError:
-        raw = b""
-    ctx.mem.write(dst, raw + b"\x00")
-    ctx.ret(dst)
+        data = text.encode("utf-16-be", errors="replace") + b"\x00\x00"
+    except UnicodeEncodeError:          # pragma: no cover - utf-16 不会失败
+        data = b"\x00\x00"
+    buf = ctx.mem.malloc(len(data))
+    if not buf:
+        if err_p and ctx.mem.valid(err_p, 4):
+            ctx.mem.set_u32(err_p, 0xFFFFFFFF)
+        ctx.ret(0)
+        return
+    ctx.mem.write(buf, data)
+    # 官方函数开头 *err = -1，成功时不改回；照抄以便调用方行为一致
+    if err_p and ctx.mem.valid(err_p, 4):
+        ctx.mem.set_u32(err_p, 0xFFFFFFFF)
+    if size_p and ctx.mem.valid(size_p, 4):
+        ctx.mem.set_u32(size_p, len(data))
+    ctx.ret(buf)
 
 
 @api("mr_wstrlen")

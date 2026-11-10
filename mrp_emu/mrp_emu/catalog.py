@@ -128,6 +128,37 @@ def probe_entry_ext(path: str | Path) -> str:
         return "start.mr"
 
 
+def safe_run_name(path: str | Path) -> str:
+    """返回 dsm/ext 能安全打开的运行文件名（不含目录）。
+
+    ext 内部拼接路径用的是固定小缓冲，实测曲奇启动器把
+    ``mythroad/冒泡6.0（线条模拟器提取（曲奇启动）.mrp``（GBK 41+ 字节）
+    截成 ``mythroad/冒泡6.0（线条模拟器提取（曲奇启``，于是 ``mr_open``
+    永远失败、包内 ``res_lang0.rc`` 报 ``code=2002``，连锁导致资源全缺。
+    真机上这类应用用的是 MRP 头 0x10 处的 8.3 ASCII 短名（``cookie.mrp``）。
+
+    短 ASCII 名原样返回；长名/中文名优先用包头声明的短名，
+    包头不可读或不合法时退化为文件名散列，保证 ASCII 且不会被截断。
+    """
+    p = Path(path)
+    raw = p.name.encode("gbk", "replace")
+    if len(raw) <= 24 and all(b < 0x80 for b in raw):
+        return p.name
+
+    short = ""
+    try:
+        short = read_mrp_header(p).get("filename", "")
+    except (OSError, ValueError):
+        pass
+    if (short and len(short) <= 24
+            and all(c.isalnum() or c in "._-" for c in short)):
+        return short if short.lower().endswith(".mrp") else short + ".mrp"
+
+    import hashlib
+    digest = hashlib.sha1(p.name.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"app{digest}.mrp"
+
+
 @dataclass
 class MrpMeta:
     """一条应用记录（本地/在线通用）。"""

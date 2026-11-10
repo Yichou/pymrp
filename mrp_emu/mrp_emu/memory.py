@@ -150,12 +150,25 @@ class MrpMemory:
         if end < 0:
             end = min(off + limit, self.size)
         raw = bytes(self.buf[off:end])
-        for enc in ("gbk", "utf-8"):
+        if not raw:
+            return ""
+        if max(raw) < 0x80:
+            return raw.decode("ascii")
+
+        # MRP 里的字符串一律是 GBK/GB2312。ext 常把长文件名截断在**半个汉字**
+        # 上（曲奇启动器用 41 字节缓冲截 "冒泡6.0…曲奇启动）.mrp"），此时严格
+        # GBK 解码会抛异常。老实现接着试 utf-8、最后整串退化成 latin-1，
+        # 于是 C3 B0 C5 DD（"冒泡"）变成 "Ã°ÅÝ"，mr_open 打开一个不存在的
+        # 乱码路径，包内 res_lang0.rc 也读不到。
+        # 正解：GBK 宽容解码 + 丢掉替换符；只有整串明显是 UTF-8 时才走 UTF-8。
+        gbk_text = raw.decode("gbk", errors="replace")
+        bad = gbk_text.count("\ufffd")
+        if bad >= 2:
             try:
-                return raw.decode(enc)
+                return raw.decode("utf-8")
             except UnicodeDecodeError:
-                continue
-        return raw.decode("latin-1")
+                pass
+        return gbk_text.replace("\ufffd", "")
 
     def cstr_bytes(self, addr: int, limit: int = 4096) -> bytes:
         if not self.valid(addr, 1):

@@ -50,10 +50,15 @@ from .memory import MrpMemory
 
 STOP_ADDRESS = CODE_ADDRESS          # 所有 runCode 的停止地址
 
-# 真 MTK 机器的 0 地址是向量表/ROM，可读；老 MRP 的 sprintf("%s") 拿到
-# NULL 时会读到 0 并当成空串，不会炸。Unicorn 默认不映射 0 页，于是
-# "读未映射" 直接终止整个模拟器 —— RX 管理器浏览根目录就是这么崩的。
-ZERO_PAGE_SIZE = 0x10000
+# 真 MTK 机器从 0 地址往上直到代码段起点都是固件 ROM / 低地址 RAM，可读可写；
+# 老 MRP 拿到 NULL 或野指针时会读到 0 并当成空数据，不会终止。
+#   * RX 管理器：sprintf("%s") 拿到 NULL 字符串，读 0 页 —— 需要 0x0..0x10000。
+#   * 曲奇启动器：透明位图 blit 的源指针是 0x15858（低地址垃圾值），
+#     在 0x87A24 执行 ldrh 读 2 字节 —— 只映射 0 页仍会 UcError 终止整个 VM。
+# 所以整段 0x0..CODE_ADDRESS 都按真机语义铺成零填充可读区。
+# 注意：这会容忍一部分真正的野指针解引用（读到 0 而非崩溃），是复古兼容取舍。
+ZERO_PAGE_SIZE = 0x10000                 # 最小零页，保留给旧调用方
+LOW_MEMORY_SIZE = CODE_ADDRESS           # 0x80000，覆盖全部低地址 ROM/RAM
 
 
 class Vm:
@@ -102,11 +107,13 @@ class Vm:
 
         if self.zero_page:
             try:
-                self.uc.mem_map(0, ZERO_PAGE_SIZE, UC_PROT_ALL)
-                self.uc.mem_write(0, b"\x00" * ZERO_PAGE_SIZE)
-                self.log(f"[vm] 零页 0x0-0x{ZERO_PAGE_SIZE:X} 已映射（兼容 NULL 字符串）")
+                self.uc.mem_map(0, LOW_MEMORY_SIZE, UC_PROT_ALL)
+                self.uc.mem_write(0, b"\x00" * LOW_MEMORY_SIZE)
+                self.log(
+                    f"[vm] 低地址 0x0-0x{LOW_MEMORY_SIZE:X} 已映射"
+                    "（真机 ROM/RAM；兼容 NULL 字符串与低地址野指针）")
             except UcError as exc:  # pragma: no cover
-                self.log(f"[vm] 零页映射失败（不影响主内存）: {exc}")
+                self.log(f"[vm] 低地址映射失败（不影响主内存）: {exc}")
 
     def _install_mem_guard(self) -> None:
         """记录非法内存访问地址，崩溃时给出可诊断信息。"""

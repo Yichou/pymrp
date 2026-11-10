@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     from .api.mrtable import MR_TABLE
     from .app import App
     from .audio.mixer import AudioEngine
-    from .catalog import Catalog, probe_entry_ext
+    from .catalog import Catalog, probe_entry_ext, safe_run_name
     from .consts import KEY_NAME_TO_CODE
     from .ui.launcher import Launcher
     from .ui.phone import PhoneUI
@@ -256,15 +256,22 @@ def main(argv: list[str] | None = None) -> int:
         pygame.display.set_caption(title)
 
     def ensure_in_mythroad(path: Path) -> Path:
-        """dsm 层默认在 <workdir>/mythroad/ 下找 mrp，不在那儿就复制一份。"""
+        """dsm 层默认在 <workdir>/mythroad/ 下找 mrp，不在那儿就复制一份。
+
+        同时换成 ``safe_run_name()`` 给出的短 ASCII 运行名：ext 的路径缓冲
+        装不下长中文名，会把路径截断导致打不开自己的 MRP 包。
+        """
         folder = workdir / "mythroad"
         folder.mkdir(parents=True, exist_ok=True)
-        if path.parent.resolve() == folder.resolve():
-            return path
-        dst = folder / path.name
+        dst = folder / safe_run_name(path)
+        try:
+            if path.resolve() == dst.resolve():
+                return dst
+        except OSError:
+            pass
         if not dst.exists() or dst.stat().st_size != path.stat().st_size:
             shutil.copy2(path, dst)
-            log(f"[catalog] 已放入运行环境 {dst.name}")
+            log(f"[catalog] 已放入运行环境 {dst.name}（安全运行名）")
         return dst
 
     def back_to_home() -> None:
@@ -349,7 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         launcher.on_exit = on_exit
 
     if direct and mrp_path and not args.demo:
-        if not launch_path(mrp_path):
+        # 运行名会换成短 ASCII，但窗口标题仍显示用户给的中文名
+        if not launch_path(mrp_path, mrp_path.stem):
             mode = "demo"
     elif direct and not runtime:
         log(f"[vm] 未找到 cfunction.ext（工作目录 {workdir}），进入演示模式")

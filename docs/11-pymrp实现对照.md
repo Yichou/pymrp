@@ -7,10 +7,12 @@
 ```
 mrp_emu/
 ├── consts.py            常量（键值/事件/文件/声音/内存布局）—— 以头文件为准
-├── memory.py            8MB 内存 + first-fit 分配器 + 零拷贝共享
+├── memory.py            8MB 内存 + first-fit 分配器 + 零拷贝共享 + GBK 容错 cstr
 ├── bridge.py            函数表 + UC_HOOK_CODE 拦截（syscall 机制核心）
 ├── vm.py                Unicorn 封装：run_code / 事件 / timer / r9 防御
+│                        + 低地址 ROM 映射（0x0–CODE_ADDRESS）
 ├── fs.py                虚拟文件系统（路径沙箱 + 相对路径容错）
+├── catalog.py           MRP 头解析 + 在线/本地索引 + safe_run_name 短名接管
 ├── gfx.py               RGB565 帧缓冲 + 紧凑位图 blit + DSM 脏矩形同步 + 字体缓存
 ├── app.py               App 门面（fs/gfx/audio 组装）
 ├── cli.py               主循环、键鼠输入、截图、统计
@@ -30,7 +32,7 @@ mrp_emu/
     └── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通
 ```
 
-约 5300 行核心代码 + 1200 行测试。
+约 5400 行核心代码 + 1400 行测试。
 
 ## 2. API 覆盖度
 
@@ -83,6 +85,9 @@ pack_filename / start_filename                       当前包名与入口
 | `audio_probe.py` | 70 | MIDI/WAV 解析、合成、缓存、PCM 流、状态机、**ARM 端到端**、FFT 音准 |
 | `r9_probe.py` / `r9_trace.py` | — | r9 状态探针与执行期采样证明 |
 | `launch_probe.py` | — | 端到端：启动器 → 选推箱子 → 标题画面 |
+| `gfx_probe.py` | 21 | DSM 脏矩形 stride 语义 + RX 花屏回归 |
+| `net_probe.py` / `legacy_net_probe.py` | 57 / 51 | 回环网络、ARM 回调、DNS 覆写与 WAP 代理 |
+| `cookie_probe.py` | 35 | 低地址 ROM 映射 / GBK 容错 / 安全运行名 / c2u / 真实曲奇 300 帧 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。
 
@@ -111,6 +116,10 @@ Esc=挂机 / F12=截图。Ctrl+Q 退出窗口，AltGr 与 Ctrl+Shift 等组合�
 - **MP3/AMR/M4A/AAC** 解码未做（需编解码库），明确返回失败并打日志；
 - **运行时文件**（`cfunction.ext`、字库、游戏）不随源码分发在本仓库的 git 中——
   用 `python tools/fetch_runtime.py` 从 vmrp 发行包自动获取。
+- **曲奇/冒泡类应用**还依赖 `mythroad/app240320/` 运行时资源包
+  （`resmrp.mrp`、短名图标缓存、`rollmsg.dat`…）。真机由手机预置或首次联网下发，
+  斯凯服务器停运后无法同步；缺了不影响主界面，但会打 `[fs] 打开失败`。
+  详见 [15 §七](15-曲奇启动器崩溃复盘.md#七遗留仍缺的运行时资源不是模拟器的-bug)。
 
 ## 7. 二次开发指引
 

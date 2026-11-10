@@ -233,6 +233,7 @@ python tests/audio_probe.py       # 声音全链路
 python tests/key_probe.py         # 按键与触摸
 python tests/net_probe.py         # 网络 57 项（回环 TCP/UDP/DNS/cmwap/回调）
 python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花屏回归）
+python tests/cookie_probe.py      # 曲奇 35 项（低地址映射/GBK 容错/短名/c2u/真实 300 帧）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出
