@@ -226,6 +226,8 @@ CONNECT 隧道 + 自造 200 响应；CLI 新增 `--dns-map` / `--wap-proxy`。
   **fb 与离屏缓冲逐像素不一致 0 次**（局部 88 次）；
 - 全套回归无退化：`selftest / key / touch / audio / launch / launcher /
   net / keymap / gfx / legacy_net` 全部 rc=0；
+- 改动涉及 DSM 全局槽位，特意复测其它真实 MRP：`dsm_gm`（应用列表完整、
+  图标/字库/选中高亮正常）、`box`、`tetris` 均正常渲染，无黑屏无花屏；
 - 从 `mrp_emu.pyz` 加载代码（`PYMRP_FROM_PYZ=1`）复测 RX，同一帧界面完整；
 - 三联对比图 `mrp_emu/out/rx_gfx_before_after.png`：老板截图 / 修复前复现 / 修复后。
 
