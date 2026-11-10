@@ -339,3 +339,54 @@ x 88–212 与左右按键列各留 8px，不重叠；数字键盘整体下移�
 
 **边界**：`waveOutGetNumDevs()>0` 但 WASAPI 仍打不开的环境（远程桌面虚拟声卡）
 用 `--audio-driver fast`；非 Windows 不做探测，保持 SDL 默认行为。
+
+---
+
+## 高分屏缩放 + 退出收尾 + 崩溃隔离
+
+老板一次提了三个问题，逐个拆掉：
+
+### ① 缩放发糊（两个独立的放大叠在一起）
+
+| 来源 | 修法 |
+|---|---|
+| Windows 系统 DPI 拉伸（进程不感知 DPI） | `cli.py::enable_dpi_awareness()` → `PER_MONITOR_AWARE_V2`（实测生效） |
+| 我们自己 `smoothscale` 拉伸 300×690 成品图 | 机壳改**整数倍矢量重绘**：`skin.py::scaled_skin()` + `PhoneUI(scale=k)` |
+
+非整数倍缩放无解（像素被打散到半个物理像素），所以 `--scale` 只认整数倍，
+`cli` 不再对整帧拉伸，事件坐标直接用物理像素。对比图 `out/zoom_compare.png`：
+左=整图拉伸（文字发虚）、右=矢量重绘（笔画锐利）；整机 2x 截图 600×1380。
+
+### ② mr_exit() 之后音乐不停、句柄不关
+
+**根因一句话：`vm.exited` 只被设置，从来没有被消费。** 于是退出后背景音乐继续
+放、socket 挂着、文件句柄占着（**句柄号会被下次会话复用**）、界面回不去。
+
+新增统一收尾：`App.shutdown_session()` → 停声音（`AudioEngine.stop_all()`：
+音效/PCM 流/流媒体/背景音乐）→ 关 socket（`NetEngine.close_network()`）→
+关句柄（`VirtualFs.close_all()`）→ `back_to_home()` 退回系统界面。
+cli 主循环每帧检查 `vm.exited` 并触发。
+
+端到端日志：`[vm] 应用调用 mr_exit()` → `[teardown] 已关闭 1 个文件句柄、
+10 个 socket` → `[teardown] 应用退出（mr_exit）`。
+
+### ③ 三国志 `PC=0x2FF282` 野指针崩溃
+
+本地 900 帧按键稳定复现（老板日志 `0xCE875143` / 本地 `0xCE87512B`，同一段
+代码）。定位结论：**应用侧缺陷** —— 反汇编显示 PC 落进 switch 编译出的跳转表
+（数据），即间接跳转目标算错；`mr_platEx(1204)` 与 mrpoid 官方语义一致、
+可排除；造 5 个假缺失文件后野指针值一模一样，**不是"读到空数据"**。
+
+模拟器侧做**崩溃隔离**：以前只有 `timer` 有 try，按键路径全裸调 ——
+`key_event` 一崩进程直接死。现在所有 VM 调用（`key_event`/`touch_event`/`timer`）
+统一走 `guarded`：记录原因 → 收尾 → 退回系统界面，进程退出码仍是 0。
+
+**改动文件**：`cli.py`（DPI 感知、整数倍缩放、`guarded`、exited 消费）、
+`ui/skin.py`（`scaled_skin`）、`ui/phone.py`（矢量重绘）、`app.py`
+（`shutdown_session`）、`fs.py`（`close_all`）、`audio/mixer.py`（`stop_all`）、
+`audio/media.py`（`release_all`）。
+
+**验证**：新增 `tests/exit_probe.py` 23 项、`tests/crash_probe.py` 15 项；
+全套 **15 个探针 rc=0**；`mrp_emu.pyz` 重打包 **105.6 KB**，从单文件版跑
+`--scale 2` 得到 600×1380 窗口、DPI 感知 `per-monitor-v2`、首帧 970ms。
+知识库新增 `docs/18-高分屏缩放与退出收尾.md`，同步 `08/11/16/17`、README。

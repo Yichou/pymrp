@@ -109,6 +109,27 @@ class VirtualFs:
             return MR_FAILED
         return MR_SUCCESS
 
+    def close_all(self) -> int:
+        """关掉所有还开着的文件句柄与目录句柄。
+
+        应用退出（mr_exit）或崩溃收尾时必须调：漏掉的句柄会让文件描述符
+        一直占着，应用再开文件会拿到新句柄号，旧数据悬在内存里。
+        返回关掉的句柄数。
+        """
+        n = len(self.handles)
+        for f in list(self.handles.keys()):
+            try:
+                self.close(f)
+            except Exception:
+                self.handles.pop(f, None)
+        for d in list(self.dirs.keys()):
+            try:
+                self.closedir(d)
+            except Exception:
+                pass
+        self.dirs.clear()
+        return n
+
     def read(self, f: int, length: int) -> bytes:
         h = self.handles.get(f)
         if not h:

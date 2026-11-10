@@ -12,16 +12,27 @@ import pygame
 
 from ..consts import KEY_NAME_TO_CODE
 from ..gfx import get_font
+from .skin import scaled_skin
 
 
 class PhoneUI:
-    def __init__(self, skin: dict) -> None:
+    def __init__(self, skin: dict, scale: int = 1) -> None:
+        """``scale`` 是整数倍放大系数。
+
+        整个机壳按 ``scale`` **矢量重绘**（不是把 300x690 的成品图拉伸），
+        所以文字、圆角、圆盘在高分屏上都是物理像素级的锐利输出。
+        """
+        self.k = max(1, int(scale))
+        skin = scaled_skin(skin, self.k)
         self.skin = skin
         self.w = skin["width"]
         self.h = skin["height"]
+        # 屏幕逻辑分辨率（MRP 坐标）不变；显示区按 k 放大
+        self.screen_w = skin["screen"].get("w", 240)
+        self.screen_h = skin["screen"].get("h", 320)
         self.screen_rect = pygame.Rect(
             skin["screen"]["x"], skin["screen"]["y"],
-            skin["screen"]["w"], skin["screen"]["h"],
+            self.screen_w * self.k, self.screen_h * self.k,
         )
         self.bezel = skin["screen"].get("bezel", 6)
         # 屏幕内部分辨率（MRP 坐标），与窗口上的像素尺寸无关
@@ -66,7 +77,7 @@ class PhoneUI:
         )
         # 顶部高光
         pygame.draw.line(surf, (88, 94, 104), (b["radius"], 1),
-                         (self.w - b["radius"], 1), 1)
+                         (self.w - b["radius"], 1), self.k)
         return surf
 
     def _build_gloss(self) -> pygame.Surface:
@@ -75,8 +86,9 @@ class PhoneUI:
         w = self.screen_rect.w + pad
         h = self.screen_rect.h + pad
         surf = pygame.Surface((w, h), pygame.SRCALPHA)
-        for i in range(-h, w, 3):
-            pts = [(i, 0), (i + 26, 0), (i + 26 - h // 3, h), (i - h // 3, h)]
+        for i in range(-h, w, 3 * self.k):
+            pts = [(i, 0), (i + 26 * self.k, 0),
+                   (i + 26 * self.k - h // 3, h), (i - h // 3, h)]
             pygame.draw.polygon(surf, (255, 255, 255, 10), pts)
         fade = pygame.Surface((w, h), pygame.SRCALPHA)
         for y in range(h):
@@ -128,33 +140,35 @@ class PhoneUI:
         # 扁平键面：极淡上下明暗，不再用黑描边
         surf.blit(self._grad(w, h, c1, c2, radius), (x, y))
         pygame.draw.rect(surf, pal["key_edge"], (x, y, w, h),
-                         width=1, border_radius=radius)
+                         width=self.k, border_radius=radius)
 
         if style == "num":
             # 键盘背光轮廓
             pygame.draw.rect(
-                surf, (46, 62, 84), (x + 2, y + 2, w - 4, h - 4),
-                width=1, border_radius=radius - 2,
+                surf, (46, 62, 84),
+                (x + 2 * self.k, y + 2 * self.k, w - 4 * self.k, h - 4 * self.k),
+                width=self.k, border_radius=radius - 2 * self.k,
             )
             label = key["label"]
             sub = key.get("sub") or ""
-            f_big = get_font("arial", 15, bold=True)
+            f_big = get_font("arial", 15 * self.k, bold=True)
             img = f_big.render(label, True, text_color)
-            dy = -4 if sub else 0
+            dy = -4 * self.k if sub else 0
             surf.blit(img, (x + (w - img.get_width()) // 2, y + (h - img.get_height()) // 2 + dy))
             if sub:
-                f_small = get_font("arial", 7)
+                f_small = get_font("arial", 7 * self.k)
                 s = f_small.render(sub, True, pal["num_sub"])
-                surf.blit(s, (x + (w - s.get_width()) // 2, y + h - 10))
+                surf.blit(s, (x + (w - s.get_width()) // 2, y + h - 10 * self.k))
         else:
-            f = get_font("microsoftyahei", 13)
+            f = get_font("microsoftyahei", 13 * self.k)
             img = f.render(key["label"], True, text_color)
             surf.blit(img, (x + (w - img.get_width()) // 2, y + (h - img.get_height()) // 2))
 
         if active:
             pygame.draw.rect(
-                surf, pal["press_glow"], (x + 2, y + 2, w - 4, h - 4),
-                width=1, border_radius=radius - 2,
+                surf, pal["press_glow"],
+                (x + 2 * self.k, y + 2 * self.k, w - 4 * self.k, h - 4 * self.k),
+                width=self.k, border_radius=radius - 2 * self.k,
             )
 
     def _draw_nav(self, surf: pygame.Surface, active_ids: set[str]) -> None:
@@ -168,11 +182,11 @@ class PhoneUI:
         face = self._grad(r * 2, r * 2,
                           pal["nav_face_top"], pal["nav_face_bottom"], r)
         surf.blit(face, (cx - r, cy - r))
-        pygame.draw.circle(surf, pal["nav_edge"], (cx, cy), r, 1)
+        pygame.draw.circle(surf, pal["nav_edge"], (cx, cy), r, self.k)
 
         # 四向箭头：距圆心 0.725r，与 OK 圆、盘沿都留足空隙
         arrow_r = r * pal.get("arrow_radius", 0.725)
-        size = max(5.0, r * 0.12)
+        size = max(5.0 * self.k, r * 0.12)
         half = size * 0.62
         dirs = {
             "UP": (0.0, -arrow_r, -90.0),
@@ -192,8 +206,8 @@ class PhoneUI:
             bottom = [min(255, int(v * 1.12) + 8) for v in bottom]
         ok = self._grad(hole * 2, hole * 2, top, bottom, hole)
         surf.blit(ok, (cx - hole, cy - hole))
-        pygame.draw.circle(surf, pal["ok_edge"], (cx, cy), hole, 1)
-        f = get_font("arial", max(9, int(hole * 0.55)), bold=True)
+        pygame.draw.circle(surf, pal["ok_edge"], (cx, cy), hole, self.k)
+        f = get_font("arial", max(9 * self.k, int(hole * 0.55)), bold=True)
         img = f.render("OK", True, pal["highlight"] if ok_active else pal["ok_text"])
         surf.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
@@ -205,21 +219,24 @@ class PhoneUI:
         b = self.skin["body"]
         # 听筒
         sx, sy, sw, sh = b["speaker"]
-        pygame.draw.rect(surf, (14, 15, 18), (sx, sy, sw, sh), border_radius=3)
-        pygame.draw.rect(surf, (78, 84, 94), (sx, sy, sw, sh), width=1, border_radius=3)
-        for i in range(sx + 6, sx + sw - 4, 6):
+        pygame.draw.rect(surf, (14, 15, 18), (sx, sy, sw, sh),
+                         border_radius=3 * self.k)
+        pygame.draw.rect(surf, (78, 84, 94), (sx, sy, sw, sh),
+                         width=self.k, border_radius=3 * self.k)
+        for i in range(sx + 6 * self.k, sx + sw - 4 * self.k, 6 * self.k):
             pygame.draw.line(surf, (60, 66, 76), (i, sy + 2), (i, sy + sh - 2))
         # 品牌
-        f = get_font("arial", 13, bold=True)
+        f = get_font("arial", 13 * self.k, bold=True)
         img = f.render(b.get("brand", "MTK"), True, b.get("brand_color", (170, 178, 190)))
-        surf.blit(img, ((self.w - img.get_width()) // 2, sy + sh + 7))
+        surf.blit(img, ((self.w - img.get_width()) // 2, sy + sh + 7 * self.k))
 
         # 屏幕凹槽 + 边框
         pad = self.bezel
         slot = pygame.Rect(self.screen_rect.x - pad, self.screen_rect.y - pad,
                            self.screen_rect.w + pad * 2, self.screen_rect.h + pad * 2)
-        pygame.draw.rect(surf, (12, 13, 15), slot, border_radius=6)
-        pygame.draw.rect(surf, (66, 72, 82), slot, width=1, border_radius=6)
+        pygame.draw.rect(surf, (12, 13, 15), slot, border_radius=6 * self.k)
+        pygame.draw.rect(surf, (66, 72, 82), slot, width=self.k,
+                         border_radius=6 * self.k)
 
         if screen_surface is not None:
             scaled = screen_surface
@@ -231,7 +248,7 @@ class PhoneUI:
             pygame.draw.rect(surf, (8, 9, 11), self.screen_rect)
 
         # 屏幕内阴影
-        pygame.draw.rect(surf, (0, 0, 0), self.screen_rect, width=2)
+        pygame.draw.rect(surf, (0, 0, 0), self.screen_rect, width=2 * self.k)
         surf.blit(self._gloss, slot.topleft)
 
         # 导航盘 + 按键
@@ -242,7 +259,8 @@ class PhoneUI:
         # 麦克风
         mx, my, mw, mh = b["mic"]
         for i in range(3):
-            pygame.draw.circle(surf, (16, 17, 20), (mx + i * 4, my + mh // 2), 1)
+            pygame.draw.circle(surf, (16, 17, 20),
+                               (mx + i * 4 * self.k, my + mh // 2), self.k)
 
         return surf
 

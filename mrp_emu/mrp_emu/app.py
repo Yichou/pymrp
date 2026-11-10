@@ -44,6 +44,32 @@ class App:
     def uptime_ms(self) -> int:
         return int((time.monotonic() - self.t0) * 1000)
 
+    def shutdown_session(self, reason: str = "") -> dict:
+        """退出 / 崩溃时的**统一收尾**：停声音、关网络、关文件句柄。
+
+        MRP 侧的 ``mr_exit()`` 只置一个标志位，真正干活的是这里。以前
+        只关了 socket，于是退到系统界面后背景音乐还在响、文件句柄一直
+        占着（句柄号会被下一次会话复用，MRP 侧可能读到别的文件）。
+
+        返回收尾统计，便于日志与回归测试断言。
+        """
+        info: dict = {"reason": reason, "sockets": 0, "files": 0, "audio": False}
+        try:
+            self.net.close_network()
+            info["sockets"] = len(getattr(self.net, "slots", []) or [])
+        except Exception:  # noqa: BLE001 - 收尾不能因为单项失败而中断
+            pass
+        try:
+            info["files"] = self.fs.close_all()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.audio.stop_all()
+            info["audio"] = True
+        except Exception:  # noqa: BLE001
+            pass
+        return info
+
     def timer_start(self, ms: int) -> None:
         self.timer_interval = max(0, ms)
         self.next_timer_at = time.monotonic() + self.timer_interval / 1000.0

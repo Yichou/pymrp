@@ -249,6 +249,38 @@ class AudioEngine:
         if self.log:
             self.log(f"[audio] 停止 {SOUND_TYPE_NAMES.get(stype, stype)}")
 
+    def stop_all(self) -> None:
+        """一键静音：一次性音效、PCM 流、流媒体、背景音乐全部停下。
+
+        应用调用 ``mr_exit()`` 或崩溃收尾时必须调它 —— 否则退到系统界面后
+        喇叭还在响（后台音乐最明显），老应用还会以为声音没停而反复重播。
+        """
+        for stype in list(self._channels.keys()):
+            try:
+                self.stop(stype)
+            except Exception:
+                pass
+        self._channels.clear()
+        self._hold.clear()
+        if self.stream is not None:
+            try:
+                self.stream.stop()
+            except Exception:
+                pass
+            self.stream = None
+        try:
+            self.media.release_all()
+        except Exception:
+            pass
+        try:
+            import pygame
+            pygame.mixer.music.stop()
+            for i in range(pygame.mixer.get_num_channels()):
+                pygame.mixer.Channel(i).stop()
+        except Exception:
+            pass
+        self.last_desc = ""
+
     # ------------------------------------------------------------ MIDI
     def _load_midi(self, data: bytes):
         key = b"M" + hashlib.md5(data).digest()

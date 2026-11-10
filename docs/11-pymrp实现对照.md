@@ -14,7 +14,7 @@ mrp_emu/
 ├── fs.py                虚拟文件系统（路径沙箱 + 相对路径容错）
 ├── catalog.py           MRP 头解析 + 在线/本地索引 + safe_run_name 短名接管
 ├── gfx.py               RGB565 帧缓冲 + 紧凑位图 blit + DSM 脏矩形同步 + 字体缓存
-├── app.py               App 门面（fs/gfx/audio 组装）
+├── app.py               App 门面（fs/gfx/audio 组装）+ shutdown_session 统一收尾
 ├── cli.py               主循环、键鼠输入、截图、统计、最小 SDL 初始化、启动打点
 ├── api/
 │   ├── mrtable.py       mr_table 146 槽（111 函数 + 35 数据槽）
@@ -28,8 +28,8 @@ mrp_emu/
 │   ├── media.py         mr_platEx(201x~225x) 状态机
 │   └── mixer.py         AudioEngine 门面 + md5 缓存 + 无音频设备快速跳过
 └── ui/
-    ├── skin.py          JSON 皮肤加载（v2 扁平化导航区几何/配色）
-    ├── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通
+    ├── skin.py          JSON 皮肤加载（v2 扁平化导航区几何/配色 + scaled_skin 整数倍缩放）
+    ├── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通 + 矢量重绘（scale=k）
     └── launcher.py      MTK 桌面 / 九宫格 / 游戏中心（240x320）
 ```
 
@@ -91,6 +91,8 @@ pack_filename / start_filename                       当前包名与入口
 | `cookie_probe.py` | 35 | 低地址 ROM 映射 / GBK 容错 / 安全运行名 / c2u / 真实曲奇 300 帧 |
 | `skin_probe.py` | 50 | 导航区几何（v2.1 按键 58×50）/ 配色采样 / 命中 / 按下态 / 旧 JSON 兼容 |
 | `startup_probe.py` | 24 | 最小 SDL 初始化、无声卡快速静音、端到端启动 <6s、首帧打点 |
+| `exit_probe.py` | 23 | mr_exit 槽位、shutdown_session 三件套、幂等、cli 消费分支、端到端退出 |
+| `crash_probe.py` | 15 | cli 无裸调 VM 调用、真实三国志崩溃捕获、崩溃后干净收尾、端到端崩溃隔离 |
 | `rx_env.py`（helper） | — | 为 RX 回归构造固定隔离快照，排除应用自建缓存目录 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。

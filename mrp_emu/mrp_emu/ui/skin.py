@@ -10,6 +10,7 @@ v2（导航区扁平化）：参考样式重排 —— 大圆形 D-pad 居中，
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -104,6 +105,50 @@ def build_default() -> dict:
         },
         "keys": keys,
     }
+
+
+def scaled_skin(skin: dict, k: int) -> dict:
+    """把皮肤几何整体放大 ``k`` 倍（整数倍缩放）。
+
+    为什么必须是整数倍：非整数缩放（如 1.27x）会让每个像素落在半个物理
+    像素上，无论用 ``smoothscale``（柔）还是 ``scale``（糙）都糊。整数倍
+    下机壳是矢量重绘的，文字和圆盘完全锐利。
+
+    只动几何（位置 / 尺寸 / 圆角），不动配色。``screen.w/h`` 是 MRP 的
+    **逻辑分辨率**（240x320），不能放大 —— 坐标换算要靠它；显示区由
+    ``PhoneUI`` 按 ``k`` 自行换算。
+    """
+    if k <= 1:
+        return skin
+    s = copy.deepcopy(skin)
+    s["width"] = skin["width"] * k
+    s["height"] = skin["height"] * k
+
+    body = skin["body"]
+    b = s["body"]
+    b["radius"] = body["radius"] * k
+    b["edge_width"] = body.get("edge_width", 2) * k
+    for key in ("speaker", "mic"):
+        if key in body:
+            b[key] = [v * k for v in body[key]]
+
+    sc = s["screen"]
+    sc["x"] = skin["screen"]["x"] * k
+    sc["y"] = skin["screen"]["y"] * k
+    sc["bezel"] = skin["screen"].get("bezel", 6) * k
+
+    nav = s["nav"]
+    for key in ("cx", "cy", "r", "hole"):
+        nav[key] = skin["nav"][key] * k
+
+    pal = s["palette"]
+    for key in ("num_radius", "key_radius"):
+        if key in skin["palette"]:
+            pal[key] = skin["palette"][key] * k
+
+    for key in s["keys"]:
+        key["rect"] = [v * k for v in key["rect"]]
+    return s
 
 
 def load_skin(path: str | Path | None = None) -> dict:

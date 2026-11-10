@@ -49,6 +49,32 @@ def init_pygame_minimal() -> None:
     pygame.font.init()
 
 
+def enable_dpi_awareness() -> str:
+    """Windows 高分屏：让进程自己感知每显示器 DPI。
+
+    进程不感知 DPI 时，Windows 会把整个窗口当位图拉伸（125% / 150% 缩放下
+    满屏发虚），pygame 报上来的鼠标坐标也跟着偏。必须在创建窗口之前调用。
+    """
+    if sys.platform != "win32":
+        return "n/a"
+    try:
+        import ctypes
+        try:                                   # Win10 1703+：PER_MONITOR_AWARE_V2
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            return "per-monitor-v2"
+        except Exception:
+            pass
+        try:                                   # Win8.1+
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            return "per-monitor"
+        except Exception:
+            pass
+        ctypes.windll.user32.SetProcessDPIAware()
+        return "system"
+    except Exception:
+        return "failed"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mrp_emu",
@@ -59,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--runtime", help="cfunction.ext 路径，或包含它的目录")
     p.add_argument("--ext", default="", help="mrp 内入口名；留空自动判断（包内通常有 start.mr）")
     p.add_argument("--skin", help="皮肤 JSON 路径")
-    p.add_argument("--scale", type=float, default=0.0, help="界面缩放倍数，0=自动")
+    p.add_argument("--scale", type=float, default=0.0,
+                   help="界面缩放倍数（取整到整数倍），0=自动")
     p.add_argument("--headless", action="store_true", help="无窗口模式，渲染一帧后退出")
     p.add_argument("--screenshot", help="把界面截图保存到指定 PNG")
     p.add_argument("--frames", type=int, default=0,
@@ -209,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
             log(f"[timing] {tag}: {(time.perf_counter() - _t_start) * 1000:.1f} ms")
 
     mark("模块导入完成")
+    dpi_mode = enable_dpi_awareness()
+    mark(f"DPI 感知（{dpi_mode}）")
     init_pygame_minimal()
     mark("SDL 最小初始化（display + font）")
 
@@ -227,7 +256,6 @@ def main(argv: list[str] | None = None) -> int:
     workdir.mkdir(parents=True, exist_ok=True)
 
     skin = load_skin(args.skin or (workdir / "skin.json"))
-    ui = PhoneUI(skin)
     runtime = None if args.demo else find_runtime(workdir, args.runtime)
 
     # ---------------- 启动形态
@@ -313,10 +341,27 @@ def main(argv: list[str] | None = None) -> int:
             log(f"[catalog] 已放入运行环境 {dst.name}（安全运行名）")
         return dst
 
-    def back_to_home() -> None:
-        nonlocal mrp_loaded, mode
-        app.net.close_network()      # 挂机回桌面时把所有 socket 收干净
+    def teardown_session(reason: str) -> None:
+        """应用退出 / 崩溃时的统一收尾。
+
+        MRP 侧的 ``mr_exit()`` 只置一个标志位，真正干活的是这里：
+        背景音乐与音效要停、网络 socket 要关、文件句柄要关，
+        否则退到系统界面后喇叭还在响、连接还挂着、句柄还占着。
+        """
+        nonlocal mrp_loaded
+        try:
+            info = app.shutdown_session(reason)
+            if info.get("files") or info.get("sockets"):
+                log(f"[teardown] 已关闭 {info.get('files', 0)} 个文件句柄、"
+                    f"{info.get('sockets', 0)} 个 socket")
+        except Exception as exc:  # noqa: BLE001
+            log(f"[teardown] 收尾失败: {exc}")
         mrp_loaded = False
+        log(f"[teardown] {reason}")
+
+    def back_to_home(reason: str = "返回待机桌面") -> None:
+        nonlocal mode
+        teardown_session(reason)
         if launcher:
             mode = "launcher"
             launcher.go("home")
@@ -405,20 +450,21 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------- 窗口
     info = pygame.display.Info()
     if args.headless:
-        scale = 1.0
+        k = 1
     elif args.scale > 0:
-        scale = args.scale
+        # 整数倍缩放：非整数倍会把每个像素打散到半个物理像素上，怎么缩都糊
+        k = max(1, int(round(args.scale)))
     else:
         avail_h = max(400, info.current_h - 90)
         avail_w = max(300, info.current_w - 60)
-        scale = min(avail_h / skin["height"], avail_w / skin["width"], 1.0)
-        scale = max(scale, 0.5)
+        k = max(1, int(min(avail_h / skin["height"], avail_w / skin["width"])))
 
-    win_w = int(skin["width"] * scale)
-    win_h = int(skin["height"] * scale)
+    # 机壳按 k 倍**矢量重绘**（不是拉伸成品图），文字/圆盘在高分屏上锐利
+    ui = PhoneUI(skin, scale=k)
+    win_w, win_h = ui.w, ui.h
     screen = pygame.display.set_mode((win_w, win_h))
     update_caption()
-    mark("窗口创建完成")
+    mark(f"窗口创建完成（{win_w}x{win_h}，{k}x 矢量）")
     clock = pygame.time.Clock()
 
     # ---------------- 输入状态
@@ -452,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
                 return
             code = KEY_NAME_TO_CODE.get(name)
             if code is not None:
-                vm.key_event(code, True)
+                guarded("key_event", vm.key_event, code, True)
         elif launcher and mode == "launcher":
             launcher.handle_key(name)
 
@@ -467,12 +513,26 @@ def main(argv: list[str] | None = None) -> int:
             if key["id"] == kid:
                 code = KEY_NAME_TO_CODE.get(key["key"])
                 if code is not None:
-                    vm.key_event(code, False)
+                    guarded("key_event", vm.key_event, code, False)
                 return
         if kid.startswith("nav:"):
             code = KEY_NAME_TO_CODE.get(kid.split(":", 1)[1])
             if code is not None:
-                vm.key_event(code, False)
+                guarded("key_event", vm.key_event, code, False)
+
+    def guarded(desc: str, fn, *args):
+        """包住虚拟机调用。
+
+        MRP 是机器码，越界访问和野指针随时会把 Unicorn 打断。以前只有
+        timer 有 try/except，按键路径（key_event / touch_event）崩了会直接
+        带崩整个模拟器进程。现在统一走这里：记录 → 收尾 → 回系统界面。
+        """
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[vm] {desc} 异常: {exc}")
+            back_to_home(f"{desc} 异常")
+            return None
 
     def current_surface():
         if mode == "mrp" and mrp_loaded:
@@ -493,6 +553,11 @@ def main(argv: list[str] | None = None) -> int:
         if quit_requested:
             running = False
             break
+        if mode == "mrp" and mrp_loaded and vm.exited:
+            # 应用主动调用 mr_exit()：收尾干净再退回系统界面
+            log("[vm] 应用调用 mr_exit()")
+            back_to_home("应用退出（mr_exit）")
+            continue
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
@@ -534,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                 if name:
                     release_key(f"kb:{e.key}")
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
-                pos = (int(e.pos[0] / scale), int(e.pos[1] / scale))
+                pos = e.pos
                 kid = ui.hit(pos)
                 if kid:
                     last_key_text = kid
@@ -547,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         code = ui.key_code(kid)
                         if code is not None:
-                            vm.key_event(code, True)
+                            guarded("key_event", vm.key_event, code, True)
                     elif launcher and mode == "launcher" and name:
                         launcher.handle_key(name)
                 else:
@@ -557,15 +622,15 @@ def main(argv: list[str] | None = None) -> int:
                     if mode == "mrp" and mrp_loaded and args.touch != "off":
                         if args.touch == "native":
                             from .consts import MR_MOUSE_DOWN
-                            vm.touch_event(MR_MOUSE_DOWN, *sp)
+                            guarded("touch_event", vm.touch_event, MR_MOUSE_DOWN, *sp)
                             held["screen"] = "touch"
                         else:
                             name = ui.tap_to_key(*sp)
                             code = KEY_NAME_TO_CODE.get(name)
                             if code is not None:
                                 last_key_text = name
-                                vm.key_event(code, True)
-                                vm.key_event(code, False)
+                                guarded("key_event", vm.key_event, code, True)
+                                guarded("key_event", vm.key_event, code, False)
                     elif launcher and mode == "launcher":
                         launcher.handle_click(*sp)
             elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
@@ -576,26 +641,22 @@ def main(argv: list[str] | None = None) -> int:
                     if mode == "mrp" and mrp_loaded:
                         code = ui.key_code(kid)
                         if code is not None:
-                            vm.key_event(code, False)
+                            guarded("key_event", vm.key_event, code, False)
                 if releasing_touch and mrp_loaded:
                     from .consts import MR_MOUSE_UP
-                    sp = ui.screen_pos((int(e.pos[0] / scale), int(e.pos[1] / scale)))
-                    vm.touch_event(MR_MOUSE_UP, *(sp or (0, 0)))
+                    sp = ui.screen_pos(e.pos)
+                    guarded("touch_event", vm.touch_event, MR_MOUSE_UP, *(sp or (0, 0)))
             elif e.type == pygame.MOUSEMOTION and mrp_loaded and mode == "mrp" \
                     and args.touch == "native":
                 if held.get("screen") == "touch":
-                    sp = ui.screen_pos((int(e.pos[0] / scale), int(e.pos[1] / scale)))
+                    sp = ui.screen_pos(e.pos)
                     if sp:
                         from .consts import MR_MOUSE_MOVE
-                        vm.touch_event(MR_MOUSE_MOVE, *sp)
+                        guarded("touch_event", vm.touch_event, MR_MOUSE_MOVE, *sp)
 
         # 定时器 / 后台任务
         if mode == "mrp" and mrp_loaded and app.timer_due():
-            try:
-                vm.timer()
-            except Exception as exc:  # noqa: BLE001
-                log(f"[vm] timer 异常: {exc}")
-                back_to_home()
+            guarded("timer", vm.timer)
         if launcher and mode == "launcher":
             launcher.tick(dt)
         # 网络异步回调不能在 emu_start() 内重入，统一在主循环这里执行
@@ -604,8 +665,6 @@ def main(argv: list[str] | None = None) -> int:
         shared_audio.tick()
 
         frame = ui.draw(current_surface())
-        if scale != 1.0:
-            frame = pygame.transform.smoothscale(frame, (win_w, win_h))
         screen.blit(frame, (0, 0))
         pygame.display.flip()
         if not _first_frame_marked:

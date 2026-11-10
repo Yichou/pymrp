@@ -199,5 +199,7 @@ UC_ERR_READ_UNMAPPED`。用 `git stash` 把本次改动全部撤掉、跑 **HEAD
   `import pygame` 之外的进程开销，所以数值比 wall clock 小。
 - 有音频设备的机器上，`mixer.init()` 仍在启动时同步执行，通常几十毫秒；
   若某天出现新的慢设备，下一步再考虑「首次播放时惰性初始化」。
+- 同一轮还加了 Windows **DPI 感知**（`PER_MONITOR_AWARE_V2`），见
+  [18 §一](18-高分屏缩放与退出收尾.md#一缩放为什么糊两个独立的放大)。
 
 对比图：`mrp_emu/out/startup_perf_compare.png`。

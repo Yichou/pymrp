@@ -334,6 +334,16 @@ class MediaRack:
         for p in self.players.values():
             p.tick()
 
+    def release_all(self) -> None:
+        """释放所有播放器与背景音（应用退出 / 崩溃收尾时用）。"""
+        for p in list(self.players.values()):
+            try:
+                p.release()
+            except Exception:
+                pass
+        self.players.clear()
+        self._bg.clear()
+
     def stats(self) -> str:
         if not self.players:
             return "流媒体: 未使用"

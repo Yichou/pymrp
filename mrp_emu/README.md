@@ -249,6 +249,8 @@ python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花
 python tests/cookie_probe.py      # 曲奇 35 项（低地址映射/GBK 容错/短名/c2u/真实 300 帧）
 python tests/skin_probe.py        # 皮肤 50 项（导航区几何/配色采样/命中/按下态/旧 JSON 兼容）
 python tests/startup_probe.py     # 启动 24 项（最小 SDL 初始化/无声卡静音/端到端 <6s）
+python tests/exit_probe.py        # 退出 23 项（mr_exit 收尾：停声音/关 socket/关句柄/回桌面）
+python tests/crash_probe.py       # 崩溃 15 项（MRP 野指针隔离：崩溃不带走模拟器）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出
@@ -256,6 +258,11 @@ python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调�
 
 > 换机型外观编辑 `runtime/skin.json` 即可（几何/配色/键位全外置）；删掉该文件
 > 会自动重建默认皮肤。设计依据与自定义约束见 `docs/16-皮肤系统与导航区扁平化.md`。
+
+> **高分屏缩放**：程序已做 Windows DPI 感知（PER_MONITOR_AWARE_V2），并把机壳
+> 改成**整数倍矢量重绘**（不是拉伸成品图），所以 `--scale 2` 下文字与圆盘是
+> 物理像素级锐利的。`--scale` 只认整数倍；非整数倍缩放必然糊。
+> 见 `docs/18-高分屏缩放与退出收尾.md`。
 
 > 图形花屏排查用 `tests/rx_gfx_trace.py`：无窗口跑真实 RX 管理器，产出
 > `out/rx_trace_*_calls.txt`（全部桥接调用与 `drawBitmap` 参数）、
