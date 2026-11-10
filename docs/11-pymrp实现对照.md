@@ -99,9 +99,11 @@ Esc=挂机 / F12=截图。Ctrl+Q 退出窗口，AltGr 与 Ctrl+Shift 等组合�
 
 ## 6. 已知边界
 
-- **网络已实现**（见 [13](13-网络模块与内存健壮性.md)）：IPv4 TCP/UDP、DNS、
-  cmwap 代理、非阻塞 connect + `getSocketState`、可选 HTTP CONNECT 出站代理。
-  但 2008 年前后的 MRP 服务器几乎全部下线，「接口通」不等于「有服务」；
+- **网络已实现**（见 [13](13-网络模块与内存健壮性.md)、[14](14-斯凯服务器复活：DNS覆写与WAP代理.md)）：
+  IPv4 TCP/UDP、DNS 覆写表、cmwap/WAP 代理（绝对 URL 改写 + CONNECT 隧道）、
+  非阻塞 connect + `getSocketState`、可选 HTTP CONNECT 出站代理。
+  斯凯官方服务器已停运，但 open-skyengine 的复刻服务 `159.75.119.124`
+  仍在线（实测 `POST /simpleDownload` 返回 200）；这是第三方服务，不保证长期可用。
   不支持 IPv6 / bind / listen；
 - **`mr_getCharBitmap`** 未实现：依赖它的自绘文字应用会缺字（多数应用用内置 GB 字库，不受影响）；
 - **MP3/AMR/M4A/AAC** 解码未做（需编解码库），明确返回失败并打日志；

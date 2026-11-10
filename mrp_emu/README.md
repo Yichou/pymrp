@@ -229,8 +229,11 @@ r9 是 ARM 的静态基址寄存器，在 MRP 体系里指向「当前 ext 的�
 
 ```bash
 python tests/selftest.py
-python tests/audio_probe.py     # 音频：69 项断言
-python tests/key_probe.py       # 按键与触摸
+python tests/audio_probe.py       # 声音全链路
+python tests/key_probe.py         # 按键与触摸
+python tests/net_probe.py         # 网络 57 项（回环 TCP/UDP/DNS/cmwap/回调）
+python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
+python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 ```
 
 `selftest.py` 用硬编码 ARM 机器码直接调用桥接槽位，验证：ARM 执行、内存
@@ -245,13 +248,36 @@ python tests/key_probe.py       # 按键与触摸
 
 - **已实现**：内存管理、字符串、文件系统（含目录枚举）、RGB565 显示、
   定时器、时间日期、系统信息、随机数、按键事件、**声音全链路**
-  （mr_playSound / mr_platEx 流媒体播放器 / mr_plat PCM 环形缓冲）
-  等约 115 项。
-- **占位（返回失败但不崩溃）**：网络（socket/DNS）、MD5、短信、震动、
-  菜单/控件类。需要时在 `api/impl.py` 里补。
+  （mr_playSound / mr_platEx 流媒体播放器 / mr_plat PCM 环形缓冲）、
+  **网络全链路**（TCP/UDP/DNS/cmwap/WAP 代理/CONNECT 隧道/ARM 异步回调）
+  等约 130 项。
+- **占位（返回失败但不崩溃）**：MD5、短信、电话本、相机/图层/图片解码、
+  `mr_getCharBitmap`、菜单/控件类。需要时在 `api/impl.py` 里补。
 - **明确不支持**：AMR / AMR-WB / M4A / AAC 解码器。这些需要专门的编解码
   实现（AMR 是语音编码，不是通用音频），不在模拟范围内，调用时返回失败
   并打日志，不会假装成功。
+
+## 网络与已停运的斯凯服务器
+
+斯凯官方服务器全停了，但老 MRP 的流量可以接回来。默认行为：
+
+```bash
+python run.py                                          # 默认已接管 3 个老域名 + 内置 WAP 代理
+python run.py --dns-map ""                             # 清空覆写，按系统 DNS
+python run.py --dns-map "spd.skymobiapp.com->127.0.0.1:8088"  # 指到自己的复刻服务
+python run.py --dns-map "10.0.0.172->159.75.119.124:13230"    # 网关直连、绕开代理
+python run.py --wap-proxy off                          # 不接管 10.0.0.172
+python run.py --net-proxy http://127.0.0.1:7890        # TCP 出站走 Clash（可选）
+```
+
+默认把 `rop/spd.skymobiapp.com`、`wap.skmeg.com` 覆写到
+`159.75.119.124`（open-skyengine 的复刻服务，2026-11-10 实测在线）；
+MRP 连 `10.0.0.172` 旧 cmwap 网关时由内置 WAP 代理接管，支持绝对 URL
+改写、`Host` / `X-Online-Host` 和 `CONNECT` 隧道。完整逆向见
+`../docs/14-斯凯服务器复活：DNS覆写与WAP代理.md`。
+
+> 该 IP 是第三方服务，不是本项目资产；随时可能下线或改策略。
+> 我们只做客户端接管，服务端 CGI 不在本项目范围。
 
 ## 已知边界
 

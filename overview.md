@@ -148,6 +148,37 @@ capstone 反汇编确认是 ext 内 `strnlen(NULL)`。根因链：浏览根目�
 自检 `tests/net_probe.py` 57 项全过（全部本机回环，不需联网）；原有 6 套
 自检无回归。详见 [docs/13](docs/13-网络模块与内存健壮性.md)。
 
+## 斯凯服务器复活：DNS 覆写 + WAP 代理（2026-11-10）
+
+老板指出官方服务器全停了，让看 `open-skyengine/skyengine-flutter`。
+把前端仓库 + Rust 子模块 `skyengine-v2` 全部拉下来逆向，结论是**三层**，
+不是一台独立代理服务器：
+
+| 层 | 实现位置（skyengine-v2） | 作用 |
+|---|---|---|
+| DNS 覆写 | `runtime.rs::default_dns_mappings()`、`arm/ext/network.rs::resolve_mapped_host()` | 3 个老斯凯域名 → `159.75.119.124`；前端由商店 `/config` 下发 hosts，经 `skyengine_api_set_dns_map` 注入 |
+| 进程内 WAP 代理 | `wap_proxy.rs`（监听 127.0.0.1:0）、`mr/host/network.rs::route_mr_endpoint()` | 接管 `10.0.0.172`，解析绝对 URL / `Host` / `CONNECT`，按覆写表转发 |
+| 远端复刻服务 | `159.75.119.124`（未开源） | 重新实现 `simpleDownload` 等斯凯 CGI（TLV 协议见 `test/e2e/simple-download-server.ts`） |
+
+服务端实测（2026-11-10）：`mrp.jysafe.cn` → `159.75.119.124`，nginx/1.30.3，
+80/6009 在线；`GET /` + `Host: spd.skymobiapp.com:6009` 被 DNSPod 未备案页 302，
+但 **`POST /simpleDownload` 返回 200** —— 复刻 CGI 确实在跑。老域名当前
+DNS 已变成 `38.48.128.189` / `135.181.255.27`，所以覆写是必需的。
+
+**pymrp 已接通**：`net.py` 新增 `DEFAULT_DNS_MAP` / `parse_dns_map()` /
+`parse_proxy_request()`、三条 `mr_connect` 路由规则、绝对 URL 改写、
+CONNECT 隧道 + 自造 200 响应；CLI 新增 `--dns-map` / `--wap-proxy`。
+与 Rust 引擎的差异：我们不开监听端口，用「假连接 + 首包改写」实现，
+更轻但不支持同一 keep-alive 连接上中途换 Host 的重路由。
+
+验证：`tests/legacy_net_probe.py` 离线 51 项、加 `--online` 55 项全过
+（含真实 `POST /simpleDownload` 200）；全部 8 套自检无回归。
+完整源码证据、协议字段、边界见
+[docs/14](docs/14-斯凯服务器复活：DNS覆写与WAP代理.md)。
+
+> 边界：`159.75.119.124` 是第三方服务、不是我们的资产，随时可能下线；
+> 我们只做客户端接管，服务端 CGI 不在本项目范围。
+
 ## Git 仓库与知识库（2026-11-10）✅
 
 - 源码已推送：**https://github.com/Yichou/pymrp.git**（main，362 文件 2.5 万行；

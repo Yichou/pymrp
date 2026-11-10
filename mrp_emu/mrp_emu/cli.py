@@ -79,6 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="MRP 的 TCP 出站 HTTP 代理（支持 CONNECT），如 http://127.0.0.1:7890；"
                         "默认直连，也可设 PYMRP_NET_PROXY")
     p.add_argument("--net-off", action="store_true", help="关闭 MRP 网络（所有 socket API 返回 MR_FAILED）")
+    p.add_argument("--dns-map", default=None,
+                   help="老斯凯域名覆写，格式 'HOST->IPv4[:PORT];...'；"
+                        "默认把 rop/spd.skymobiapp.com、wap.skmeg.com 指向 159.75.119.124，"
+                        "传空字符串可清空；也可写 10.0.0.172->IP:PORT 覆盖 WAP 网关")
+    p.add_argument("--wap-proxy", choices=("on", "off"), default="on",
+                   help="内置 WAP 代理（接管 10.0.0.172，支持绝对 URL / Host / CONNECT），默认 on")
     p.add_argument("--strict-null", action="store_true",
                    help="不映射 0 页，用于抓 NULL 指针解引用（调试用，默认映射以兼容真机行为）")
     return p
@@ -211,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         a = App(v, workdir, log=log, audio=(args.audio != "off"),
                 sample_rate=args.audio_rate, pcm_rate=args.pcm_rate,
                 audio_engine=shared_audio, http_proxy=args.net_proxy,
-                net_enabled=not args.net_off)
+                net_enabled=not args.net_off, dns_map=args.dns_map,
+                wap_proxy=(args.wap_proxy != "off"))
         v.app = a
         v.install_tables(MR_TABLE, DSM_FUNCS)
         for t in v.tables.values():

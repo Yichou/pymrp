@@ -40,6 +40,14 @@ python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 > 完整接口契约与 RX 管理器崩溃复盘见
 > [docs/13 网络模块与内存健壮性](docs/13-网络模块与内存健壮性.md)。
 
+> **斯凯官方服务器早已停运，但流量可以被接回来**：默认把
+> `rop/spd.skymobiapp.com`、`wap.skmeg.com` 覆写到 open-skyengine 的复刻服务
+> `159.75.119.124`，MRP 连 `10.0.0.172` 的旧 cmwap 网关由内置 WAP 代理接管
+> （绝对 URL 改写 / `Host` / `CONNECT` 隧道）。`POST /simpleDownload` 实测 200。
+> 换服务器：`python run.py --dns-map "spd.skymobiapp.com->你的IP:端口"`；
+> 清空：`--dns-map ""`。完整逆向与源码证据见
+> [docs/14 斯凯服务器复活](docs/14-斯凯服务器复活：DNS覆写与WAP代理.md)。
+
 ## 键位速记
 
 | 实体键 | 键盘 |
@@ -73,6 +81,8 @@ python tests/key_probe.py      # 按键/触摸
 python tests/launcher_probe.py # 启动界面 / 游戏中心 / 点击直达启动（35 项）
 python tests/net_probe.py      # 网络 57 项（TCP/UDP/DNS/cmwap/回调）+ RX 崩溃回归
 python tests/keymap_probe.py   # Ctrl/Alt 软键映射 37 项（含真实按键送达虚拟机）
+python tests/legacy_net_probe.py       # DNS 覆写 / WAP 代理 51 项（纯回环）
+python tests/legacy_net_probe.py --online  # 55 项，含 159.75.119.124 只读探针
 ```
 
 ## 资料声明

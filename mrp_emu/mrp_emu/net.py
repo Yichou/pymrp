@@ -55,7 +55,65 @@ DSM_SOC_WRITEABLE = 1
 DSM_SUPPROT_SOC_NUM = 10          # dsm.h 里的拼写（原文如此），别"修正"
 CMWAP_PROXY_IP = 0x0A0000AC       # 10.0.0.172 移动 cmwap 网关
 
+# 斯凯官方域名早已被重新解析/停放，open-skyengine/skyengine-v2 的做法是
+# 把这批老域名覆写到他们复刻的服务端 159.75.119.124（mrp.jysafe.cn 同机）。
+# 格式与 v2 的 --dns-map 一致：SOURCE->IPv4[:PORT];...
+# 传空字符串可清空；SOURCE 也可以是点分 IP，用来覆盖 cmwap 网关。
+DEFAULT_DNS_MAP = (
+    "rop.skymobiapp.com->159.75.119.124;"
+    "spd.skymobiapp.com->159.75.119.124;"
+    "wap.skmeg.com->159.75.119.124"
+)
+
 _HOST_RE = re.compile(rb"(?:X-Online-Host|Host)\s*:\s*([^\r\n]+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class DnsMapping:
+    source: str                  # 老域名或点分 IP，已小写、去尾点
+    address: str                 # 目标 IPv4
+    port: int | None = None      # 可选端口覆写
+
+
+def parse_dns_map(text: str | None) -> list[DnsMapping]:
+    """解析 ``host->ip[:port];host2->ip2``（语义对齐 skyengine-v2）。
+
+    ``None`` 表示用内置默认表；空字符串表示完全不覆写。
+    """
+    if text is None:
+        text = DEFAULT_DNS_MAP
+    out: list[DnsMapping] = []
+    seen: set[str] = set()
+    for item in text.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        if "->" not in item:
+            raise ValueError(f"DNS 映射格式错误: {item!r}，应为 HOST->IPv4[:PORT]")
+        src, dst = (x.strip() for x in item.split("->", 1))
+        src = src.rstrip(".").lower()
+        if not src or src in seen:
+            raise ValueError(f"DNS 映射源为空或重复: {src!r}")
+        if ":" in dst:
+            addr, _, p = dst.rpartition(":")
+            try:
+                port = int(p)
+            except ValueError as exc:
+                raise ValueError(f"DNS 映射端口无效: {item!r}") from exc
+            if not 0 < port < 65536:
+                raise ValueError(f"DNS 映射端口越界: {item!r}")
+        else:
+            addr, port = dst, None
+        try:
+            octets = [int(x) for x in addr.split(".")]
+            valid = len(octets) == 4 and all(0 <= x <= 255 for x in octets)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(f"DNS 映射目标不是 IPv4: {item!r}")
+        seen.add(src)
+        out.append(DnsMapping(src, addr, port))
+    return out
 
 # 切应用会重建 App/NetEngine，但 DNS 线程池全局共用，避免每次新建线程。
 _DNS_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mrp-dns")
@@ -102,6 +160,76 @@ def split_host_port(host: str) -> tuple[str, int]:
     return host, 80
 
 
+def parse_proxy_request(data: bytes) -> tuple[str, int, str, bytes] | None:
+    """解析 cmwap 网关收到的首个请求，返回 ``(host, port, mode, outbound)``。
+
+    对齐 skyengine-v2 ``wap_proxy.rs::parse_request``：
+
+    * ``CONNECT host:port``       -> mode=connect，代理自己回 200，首包不转发；
+    * ``GET http://host/path``    -> mode=absolute，改写成 origin-form、
+      剥掉 ``Proxy-Connection``、必要时补 ``Host``；
+    * ``POST /path`` + ``Host``   -> mode=host，原样转发。
+
+    ``outbound`` 是应当写给真实服务器的字节（含原始 body）。
+    """
+    end = data.find(b"\r\n\r\n")
+    head = data[:end] if end >= 0 else data
+    body = data[end + 4:] if end >= 0 else b""
+    lines = head.split(b"\r\n")
+    if not lines or not lines[0]:
+        return None
+    parts = lines[0].decode("latin1").split(" ")
+    if len(parts) != 3:
+        return None
+    method, target, version = parts
+    if not version.startswith("HTTP/1."):
+        return None
+
+    headers: list[bytes] = []
+    host_header = ""
+    has_host = False
+    for line in lines[1:]:
+        if not line:
+            continue
+        name, _, value = line.partition(b":")
+        key = name.decode("ascii", "replace").strip().lower()
+        val = value.decode("latin1").strip()
+        if key in ("host", "x-online-host"):
+            has_host = True
+            if not host_header:
+                host_header = val
+        if key != "proxy-connection":
+            headers.append(line)
+
+    if method.upper() == "CONNECT":
+        host, port = split_host_port(target)
+        return (host, port, "connect", body) if host else None
+
+    if target.lower().startswith("http://"):
+        rest = target[7:]
+        cut = [i for i in (rest.find("/"), rest.find("?")) if i >= 0]
+        idx = min(cut) if cut else len(rest)
+        authority = rest[:idx]
+        path = rest[idx:] or "/"
+        if path.startswith("?"):
+            path = "/" + path
+        host, port = split_host_port(authority)
+        if not host:
+            return None
+        out = f"{method} {path} {version}\r\n".encode("latin1")
+        if headers:
+            out += b"\r\n".join(headers) + b"\r\n"
+        if not has_host:
+            out += f"Host: {authority}\r\n".encode("latin1")
+        out += b"\r\n" + body
+        return host, port, "absolute", out
+
+    if host_header:
+        host, port = split_host_port(host_header)
+        return (host, port, "host", data) if host else None
+    return None
+
+
 @dataclass
 class SocketSlot:
     """对应 network.c 的 ``T_DSM_SOC_STAT``。"""
@@ -116,6 +244,10 @@ class SocketSlot:
     host: str = ""
     connect_at: float = 0.0
     peer: tuple[str, int] = field(default_factory=lambda: ("", 0))
+    # 内置 WAP 代理用：首包改写缓冲、CONNECT 隧道标志、代理自己生成的响应
+    first_rewrite: bytes | None = None
+    tunnel: bool = False
+    pending_recv: bytearray = field(default_factory=bytearray)
 
     def reset(self) -> None:
         self.sock = None
@@ -128,6 +260,9 @@ class SocketSlot:
         self.host = ""
         self.connect_at = 0.0
         self.peer = ("", 0)
+        self.first_rewrite = None
+        self.tunnel = False
+        self.pending_recv.clear()
 
 
 class NetEngine:
@@ -135,13 +270,18 @@ class NetEngine:
 
     def __init__(self, vm, log=print, enabled: bool = True,
                  http_proxy: str = "", connect_timeout: float = 8.0,
-                 dns_timeout: float = 4.0) -> None:
+                 dns_timeout: float = 4.0, dns_map: str | None = None,
+                 wap_proxy: bool = True) -> None:
         self.vm = vm
         self.log = log
         self.enabled = enabled
         self.http_proxy = http_proxy.strip()
         self.connect_timeout = connect_timeout
         self.dns_timeout = dns_timeout
+        # 老斯凯域名覆写表；wap_proxy=False 时 10.0.0.172 不再由内置代理接管，
+        # 需要在 dns_map 里显式写 "10.0.0.172->IP[:PORT]"（对齐 skyengine-v2）。
+        self.dns_map = parse_dns_map(dns_map)
+        self.wap_proxy = wap_proxy
         self.slots = [SocketSlot() for _ in range(DSM_SUPPROT_SOC_NUM)]
         self.initialized = False
         self.mode = ""
@@ -177,6 +317,23 @@ class NetEngine:
         if 0 <= s < DSM_SUPPROT_SOC_NUM:
             return self.slots[s]
         return None
+
+    def find_mapping(self, source: str) -> DnsMapping | None:
+        """按老域名（或点分 IP）查覆写表，大小写不敏感、忽略尾点。"""
+        key = (source or "").strip().rstrip(".").lower()
+        if not key:
+            return None
+        for m in self.dns_map:
+            if m.source == key:
+                return m
+        return None
+
+    def resolve_target(self, host: str, port: int) -> tuple[str, int]:
+        """把 MRP 以为的目标换成真实目标；映射端口优先于请求端口。"""
+        m = self.find_mapping(host)
+        if m:
+            return m.address, (m.port if m.port is not None else port)
+        return host, port
 
     def _queue_callback(self, cb: int, result: int, user_data: int = 0) -> None:
         # 0 / 明显不是模拟内存里的代码地址，就不要尝试跳进去
@@ -248,6 +405,15 @@ class NetEngine:
         if not host:
             return MR_FAILED
         self.stats["dns"] += 1
+        # 斯凯老域名先走覆写表：官方 DNS 早已被重新解析/停放，
+        # 直接 getHostByName 会拿到错误的 IP（实测 38.48.128.189）。
+        mapped = self.find_mapping(host)
+        if mapped:
+            result = ip_to_u32(mapped.address)
+            self.dns_cache[host] = result
+            self.log(f"[net] DNS {host} -> {mapped.address} (dns-map)")
+            self._queue_callback(cb, result, user_data)
+            return result
         # 本身是点分十进制就不用查 DNS
         if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host):
             result = ip_to_u32(host)
@@ -391,8 +557,28 @@ class NetEngine:
         blocking = conn_type == MR_SOCKET_BLOCK
         ip_u = ip & 0xFFFFFFFF
 
-        # cmwap 网关：先给假的已连接状态，第一次 send 时按 Host 头找真主机
-        if ip_u == CMWAP_PROXY_IP:
+        ip_text = u32_to_ip(ip_u)
+        # 1) source 是点分 IP 的显式映射优先 —— 例如把 cmwap 网关直接指到
+        #    复刻服务器（skyengine-v2 的 "10.0.0.172->159.75.119.124:13230"）。
+        direct = self.find_mapping(ip_text)
+        if direct:
+            target_host = direct.address
+            target_port = direct.port if direct.port is not None else port
+            slot.is_proxy = False
+            slot.real_connected = False
+            slot.peer = (target_host, target_port)
+            self.log(f"[net] connect({s}) {ip_text}:{port} -> dns-map "
+                     f"{target_host}:{target_port}")
+            rc = self._dial(slot, target_host, target_port, blocking)
+            if rc == MR_WAITING:
+                slot.state = DSM_SOC_CONNECTING
+                slot.connect_at = time.monotonic()
+            return rc
+
+        # 2) cmwap 网关：交给进程内 WAP 代理。先给假的已连接状态，
+        #    第一次 send 时从请求行 / Host 头找真主机（等价于 10.0.0.172 上
+        #    那个已经关停的移动网关）。
+        if ip_u == CMWAP_PROXY_IP and self.wap_proxy:
             slot.state = DSM_SOC_CONNECTED
             slot.read_stat = DSM_SOC_READABLE
             slot.write_stat = DSM_SOC_WRITEABLE
@@ -400,10 +586,17 @@ class NetEngine:
             slot.real_connected = False
             slot.host = ""
             slot.peer = ("10.0.0.172", port)
-            self.log(f"[net] connect({s}) -> cmwap 代理，等待 Host 头")
+            self.log(f"[net] connect({s}) -> 内置 WAP 代理，等待首个请求")
             return MR_SUCCESS
 
-        host = u32_to_ip(ip_u)
+        # 3) getHostByName 拿到的已经是映射后的 IP；若该映射还指定了端口，
+        #    这里补上（Rust 引擎 route_mr_endpoint 的第三条规则）。
+        for m in self.dns_map:
+            if m.address == ip_text and m.port is not None:
+                port = m.port
+                break
+
+        host = ip_text
         slot.peer = (host, port)
         self.log(f"[net] connect({s}, {host}:{port}, "
                  f"{'block' if blocking else 'nonblock'})")
@@ -463,6 +656,13 @@ class NetEngine:
         n = max(0, min(int(length), 1 << 20))
         if n == 0:
             return 0
+        # CONNECT 隧道的 "200 Connection Established" 是代理自己生成的，
+        # 要排在真实上游数据之前交给 MRP。
+        if slot.pending_recv:
+            take = min(n, len(slot.pending_recv))
+            chunk = bytes(slot.pending_recv[:take])
+            del slot.pending_recv[:take]
+            return take if self._write(buf, chunk) else MR_FAILED
         try:
             data = slot.sock.recv(n)
         except (BlockingIOError, InterruptedError):
@@ -480,18 +680,49 @@ class NetEngine:
         return len(data)
 
     def _ensure_proxy_link(self, slot: SocketSlot, payload: bytes) -> bool:
-        """cmwap：从首个 HTTP 请求里解析真实主机并补上真实连接。"""
-        host = parse_host(payload)
-        if not host:
-            self.log("[net] cmwap 请求里没有 Host 头，保持假连接")
+        """内置 WAP 代理：解析首个请求，按 dns-map 找真实服务器并建链。"""
+        parsed = parse_proxy_request(payload)
+        if not parsed:
+            self.log("[net] WAP 代理无法解析首个请求，保持假连接")
             return slot.real_connected
-        name, port = split_host_port(host)
-        if slot.real_connected and slot.host.lower() == host.lower():
-            return True
-        slot.host = host
-        self.log(f"[net] cmwap 真实主机 {name}:{port}")
-        rc = self._dial(slot, name, port, blocking=True)
-        return rc == MR_SUCCESS
+        host, port, mode, outbound = parsed
+        target_host, target_port = self.resolve_target(host, port)
+        slot.host = f"{host}:{port}"      # 原始 authority，供诊断与旧断言
+        slot.first_rewrite = outbound
+        self.log(f"[net] WAP {mode} {host}:{port} -> "
+                 f"{target_host}:{target_port}")
+        rc = self._dial(slot, target_host, target_port, blocking=True)
+        if rc != MR_SUCCESS:
+            slot.first_rewrite = None
+            return False
+        if mode == "connect":
+            slot.tunnel = True
+            slot.pending_recv.extend(
+                b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        return True
+
+    def _send_all(self, slot: SocketSlot, data: bytes) -> bool:
+        """把改写过的首包完整送出（MRP 看到的 send 长度仍是原请求长度）。"""
+        view = memoryview(data)
+        sent = 0
+        deadline = time.monotonic() + 2.0
+        while sent < len(view):
+            try:
+                n = slot.sock.send(view[sent:])
+                if n <= 0:
+                    return False
+                sent += n
+            except (BlockingIOError, InterruptedError):
+                if time.monotonic() > deadline:
+                    return False
+                select.select([], [slot.sock], [], 0.02)
+            except OSError as exc:
+                self.log(f"[net] WAP 转发失败: {exc}")
+                slot.state = DSM_SOC_ERR
+                return False
+        self.stats["send"] += 1
+        self.stats["send_bytes"] += sent
+        return True
 
     def send(self, s: int, buf: int, length: int) -> int:
         slot = self._slot(s)
@@ -500,8 +731,17 @@ class NetEngine:
         data = self._read(buf, length)
         if not data:
             return 0
-        if slot.is_proxy and not self._ensure_proxy_link(slot, data):
-            return MR_FAILED
+        if slot.is_proxy and not slot.real_connected:
+            if not self._ensure_proxy_link(slot, data):
+                return MR_FAILED
+        if slot.first_rewrite is not None:
+            outbound = slot.first_rewrite
+            slot.first_rewrite = None
+            if not outbound:            # CONNECT 头由代理自己消化，首包不发
+                return len(data)
+            if not self._send_all(slot, outbound):
+                return MR_FAILED
+            return len(data)
         if slot.write_stat != DSM_SOC_WRITEABLE:
             return MR_FAILED
         try:
@@ -566,5 +806,6 @@ class NetEngine:
         live = [i for i, s in enumerate(self.slots) if s.state != DSM_SOC_CLOSE]
         return (f"网络: {'开' if self.initialized else '未初始化'} "
                 f"mode={self.mode or '-'} 活跃socket={live} "
-                f"proxy={self.http_proxy or '-'} | " +
+                f"proxy={self.http_proxy or '-'} "
+                f"dns-map={len(self.dns_map)} wap={'on' if self.wap_proxy else 'off'} | " +
                 " ".join(f"{k}={v}" for k, v in self.stats.items()))

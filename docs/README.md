@@ -60,6 +60,7 @@
 | [11 pymrp 实现对照](11-pymrp实现对照.md) | 本仓库的实现覆盖度、槽位号、未实现项 |
 | [12 启动界面与游戏中心](12-启动界面与游戏中心.md) | MTK 真机桌面、在线/本地列表、JSON 缓存、一键启动链路 |
 | [13 网络模块与内存健壮性](13-网络模块与内存健壮性.md) | socket 状态机 / DNS / cmwap / ARM 异步回调；RX 管理器 NULL 崩溃复盘与零页修复 |
+| [14 斯凯服务器复活](14-斯凯服务器复活：DNS覆写与WAP代理.md) | open-skyengine 三层代理逆向：DNS 覆写 + 进程内 WAP 代理 + 159.75.119.124 复刻服务，以及 pymrp 的接入实现 |
 
 ### 第四篇：考据
 
@@ -111,7 +112,7 @@ python tools/extract_manual.py   # CHM 文本 -> docs/api/ 逐页 Markdown + IND
 python tools/build_docs.py       # 按主题聚合成 docs/api/topics/ 分册
 ```
 
-手写正文（`00`–`12`）不受脚本影响，可自由编辑。手册原文永远以 `docs/api/` 为准，
+手写正文（`00`–`14`）不受脚本影响，可自由编辑。手册原文永远以 `docs/api/` 为准，
 正文只是导读与总结。
 
 ---
