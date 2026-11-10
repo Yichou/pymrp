@@ -15,7 +15,7 @@ mrp_emu/
 ├── catalog.py           MRP 头解析 + 在线/本地索引 + safe_run_name 短名接管
 ├── gfx.py               RGB565 帧缓冲 + 紧凑位图 blit + DSM 脏矩形同步 + 字体缓存
 ├── app.py               App 门面（fs/gfx/audio 组装）
-├── cli.py               主循环、键鼠输入、截图、统计
+├── cli.py               主循环、键鼠输入、截图、统计、最小 SDL 初始化、启动打点
 ├── api/
 │   ├── mrtable.py       mr_table 146 槽（111 函数 + 35 数据槽）
 │   ├── dsmfuncs.py      dsm_require_funcs 51 槽（全实现）
@@ -26,7 +26,7 @@ mrp_emu/
 │   ├── wav.py           RIFF 解析 + 重采样
 │   ├── stream.py        PCM 分段流（攒块/无缝拼接/积压丢弃）
 │   ├── media.py         mr_platEx(201x~225x) 状态机
-│   └── mixer.py         AudioEngine 门面 + md5 缓存
+│   └── mixer.py         AudioEngine 门面 + md5 缓存 + 无音频设备快速跳过
 └── ui/
     ├── skin.py          JSON 皮肤加载（v2 扁平化导航区几何/配色）
     ├── phone.py         MTK 直板机机身 + 触控命中 + 坐标直通
@@ -86,12 +86,16 @@ pack_filename / start_filename                       当前包名与入口
 | `audio_probe.py` | 70 | MIDI/WAV 解析、合成、缓存、PCM 流、状态机、**ARM 端到端**、FFT 音准 |
 | `r9_probe.py` / `r9_trace.py` | — | r9 状态探针与执行期采样证明 |
 | `launch_probe.py` | — | 端到端：启动器 → 选推箱子 → 标题画面 |
-| `gfx_probe.py` | 21 | DSM 脏矩形 stride 语义 + RX 花屏回归 |
+| `gfx_probe.py` | 21 | DSM 脏矩形 stride 语义 + RX 花屏回归（隔离运行环境） |
 | `net_probe.py` / `legacy_net_probe.py` | 57 / 51 | 回环网络、ARM 回调、DNS 覆写与 WAP 代理 |
 | `cookie_probe.py` | 35 | 低地址 ROM 映射 / GBK 容错 / 安全运行名 / c2u / 真实曲奇 300 帧 |
-| `skin_probe.py` | 48 | 导航区几何比例 / 逐像素配色采样 / 命中 / 按下态 / 旧皮肤 JSON 兼容 |
+| `skin_probe.py` | 50 | 导航区几何（v2.1 按键 58×50）/ 配色采样 / 命中 / 按下态 / 旧 JSON 兼容 |
+| `startup_probe.py` | 24 | 最小 SDL 初始化、无声卡快速静音、端到端启动 <6s、首帧打点 |
+| `rx_env.py`（helper） | — | 为 RX 回归构造固定隔离快照，排除应用自建缓存目录 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。
+启动耗时诊断用 `PYMRP_TIMING=1 python run.py --frames 3`，
+详见 [17](17-启动性能：SDL初始化与音频设备探测.md)。
 
 ## 5. 启动命令
 

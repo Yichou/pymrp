@@ -336,11 +336,17 @@ def test_fs_clamp(vm) -> None:
 
 def test_rx_regression(vm, call: Caller) -> None:
     print("\n-- RX 管理器真实按键序列（原崩溃点）--")
-    wd = ROOT / "runtime"
-    target = wd / "mythroad" / "R_Xplore_MTK_all（RX管理器）.mrp"
-    if not (wd / "cfunction.ext").is_file() or not target.is_file():
+    # 固定隔离环境：不带上一次运行自建的缓存目录，保证 90 步按键可复现
+    # （背景见 tests/rx_env.py）；用 HEAD 原版代码对照过，直接跑 runtime/
+    # 会因目录漂移触发 RX 应用自身的野指针崩溃。
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from rx_env import RX_MRP, make_rx_env  # noqa: E402
+    wd, cleanup = make_rx_env(ROOT / "runtime")
+    if wd is None:
         print("  skip 运行环境不完整")
         return
+    target = wd / "mythroad" / RX_MRP
     from mrp_emu.catalog import probe_entry_ext  # noqa: E402
     v = Vm(log=lambda *a: None)
     a = App(v, wd, log=lambda *a: None, audio=False)
@@ -369,6 +375,7 @@ def test_rx_regression(vm, call: Caller) -> None:
         crashed = str(exc)
     check(not crashed, f"{len(seq)} 步按键无 UC_ERR_READ_UNMAPPED", crashed)
     a.net.close_network()
+    cleanup()
 
 
 def main() -> int:

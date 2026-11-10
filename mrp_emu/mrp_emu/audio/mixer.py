@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
+import sys
 import time
 from collections import OrderedDict
 
@@ -90,10 +92,38 @@ class AudioEngine:
             self._init()
 
     # ------------------------------------------------------------ 初始化
+    @staticmethod
+    def _device_probe() -> bool:
+        """快速判断"值不值得让 SDL 打开音频设备"。
+
+        Windows 上没有音频输出端点时，SDL 2.28 的 WASAPI 驱动会挨个枚举
+        设备并超时，单次 ``mixer.init()`` 实测要卡 **8 秒**（启动调一次、
+        ``pygame.init()`` 里再调一次就是 16 秒）。先用 winmm 的
+        ``waveOutGetNumDevs()`` 问一句，不到 0.1ms：返回 0 直接静音，
+        不再让 SDL 白等。
+
+        显式设置了 ``SDL_AUDIODRIVER``（含测试用的 dummy、以及 --audio-driver
+        指定的快速驱动）时不做探测，完全交给 SDL 决定。
+        """
+        if os.environ.get("SDL_AUDIODRIVER"):
+            return True
+        if sys.platform != "win32":
+            return True
+        try:
+            import ctypes
+            return ctypes.windll.winmm.waveOutGetNumDevs() > 0
+        except Exception:  # 探测本身失败时宁可让 SDL 自己试，别误伤有声环境
+            return True
+
     def _init(self) -> None:
         try:
             import pygame
             if not pygame.mixer.get_init():
+                if not self._device_probe():
+                    self.ok = False
+                    if self.log:
+                        self.log("[audio] 未检测到音频输出设备，跳过 mixer 初始化（静音运行）")
+                    return
                 pygame.mixer.init(
                     frequency=self.sample_rate, size=-16,
                     channels=self.channels, buffer=1024,

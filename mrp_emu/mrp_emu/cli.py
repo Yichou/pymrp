@@ -35,6 +35,20 @@ KEYMAP = {
 }
 
 
+def init_pygame_minimal() -> None:
+    """只初始化界面真正需要的 SDL 子系统。
+
+    ``pygame.init()`` 会连带 ``SDL_INIT_AUDIO``；在没有音频输出端点的
+    Windows 机器上，WASAPI 枚举一次要 ~8 秒，且 ``pygame.mixer.init()``
+    还会再花一次。display + font 两项实测合计 < 10ms，事件/计时器/
+    Surface/图片模块随 display 自动可用，手柄等用不到的子系统一律不开。
+    """
+    import pygame
+
+    pygame.display.init()
+    pygame.font.init()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mrp_emu",
@@ -48,7 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scale", type=float, default=0.0, help="界面缩放倍数，0=自动")
     p.add_argument("--headless", action="store_true", help="无窗口模式，渲染一帧后退出")
     p.add_argument("--screenshot", help="把界面截图保存到指定 PNG")
-    p.add_argument("--frames", type=int, default=0, help="headless 模式渲染帧数（默认 1）")
+    p.add_argument("--frames", type=int, default=0,
+                   help="渲染多少帧后自动退出（headless 默认 1，窗口模式默认不限；"
+                        "用于启动计时与自动化截图）")
     p.add_argument("--verbose", action="store_true", help="打印每次 API 调用")
     p.add_argument("--stats", action="store_true", help="退出时打印统计")
     p.add_argument("--demo", action="store_true", help="强制演示模式（不加载 runtime、不进桌面）")
@@ -57,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="声音：auto=有音频设备就开、没有就静音降级（默认）；on=强制开；off=完全静音",
     )
     p.add_argument("--audio-rate", type=int, default=44100, help="混音采样率，默认 44100")
+    p.add_argument(
+        "--audio-driver", default="auto",
+        choices=("auto", "fast", "wasapi", "directsound", "winmm", "dummy"),
+        help="音频驱动：auto=自动（默认，无声卡时快速静音降级）；"
+             "fast=Windows 上走 DirectSound 跳过 WASAPI 慢枚举；"
+             "其余=显式指定 SDL_AUDIODRIVER",
+    )
     p.add_argument(
         "--pcm-rate", type=int, default=8000,
         help="MR_SOUND_PCM 流的采样率，默认 8000（mrporting.h 注释 //8K）",
@@ -150,11 +173,20 @@ def paint_demo(gfx, app, last_key: str) -> None:
 
 # ---------------------------------------------------------------- 主程序
 def main(argv: list[str] | None = None) -> int:
+    _t_start = time.perf_counter()
     args = build_parser().parse_args(argv)
+    _timing = os.environ.get("PYMRP_TIMING", "") == "1"
 
     if args.headless:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+
+    # 音频驱动必须在 SDL 首次初始化音频子系统之前定下来
+    if args.audio_driver == "fast":
+        os.environ.setdefault("SDL_AUDIODRIVER",
+                             "directsound" if sys.platform == "win32" else "dummy")
+    elif args.audio_driver != "auto":
+        os.environ["SDL_AUDIODRIVER"] = args.audio_driver
 
     import pygame
 
@@ -172,7 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     def log(msg: str) -> None:
         print(msg, flush=True)
 
-    pygame.init()
+    def mark(tag: str) -> None:
+        if _timing:
+            log(f"[timing] {tag}: {(time.perf_counter() - _t_start) * 1000:.1f} ms")
+
+    mark("模块导入完成")
+    init_pygame_minimal()
+    mark("SDL 最小初始化（display + font）")
 
     # ---------------- 工作目录
     mrp_path = Path(args.mrp).resolve() if args.mrp else None
@@ -226,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         return v, a
 
     vm, app = new_session()
+    mark("VM / 会话就绪")
     mrp_loaded = False
     quit_requested = False
 
@@ -379,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     win_h = int(skin["height"] * scale)
     screen = pygame.display.set_mode((win_w, win_h))
     update_caption()
+    mark("窗口创建完成")
     clock = pygame.time.Clock()
 
     # ---------------- 输入状态
@@ -445,7 +485,8 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------- 主循环
     running = True
     frames = 0
-    max_frames = args.frames if args.headless and args.frames else (1 if args.headless else 0)
+    max_frames = args.frames or (1 if args.headless else 0)
+    _first_frame_marked = False
     dt = 1.0 / 60
 
     while running:
@@ -567,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
             frame = pygame.transform.smoothscale(frame, (win_w, win_h))
         screen.blit(frame, (0, 0))
         pygame.display.flip()
+        if not _first_frame_marked:
+            mark("首帧上屏（界面可见）")
+            _first_frame_marked = True
 
         frames += 1
         if max_frames and frames >= max_frames:

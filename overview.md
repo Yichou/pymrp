@@ -296,3 +296,46 @@ x 88–212 与左右按键列各留 8px，不重叠；数字键盘整体下移�
 **101.1 KB**，从单文件版跑 `dsm_gm.mrp` 应用列表正常且新机壳生效。
 对比图 `mrp_emu/out/skin_nav_compare.png`（参考 / 前 / 后三联）与
 `out/skin_full_compare.png`（整机前后）。
+
+---
+
+## 启动性能：17.1s → 0.85s，以及四角按键压矮
+
+老板反馈「从 pygame 欢迎日志到界面要 20 秒」。逐段计时定位到**两次 8 秒**：
+
+| 阶段 | 优化前 | 优化后 |
+|---|---:|---:|
+| `pygame.init()`（连带 `SDL_INIT_AUDIO`，WASAPI 枚举） | 8096 ms | 0（不再调用） |
+| `AudioEngine` 同步 `mixer.init()` | 8039 ms | 0（无声卡直接跳过） |
+| `display.init()+font.init()` | — | **0.3 ms** |
+| 端到端 headless / 窗口 `--frames 3` | 17.12 s | **0.85 s / 0.96 s** |
+| 首帧上屏（`PYMRP_TIMING`） | — | **240.6 ms** |
+
+关键前提：这台 Windows 机器没有音频输出端点（`waveOutGetNumDevs()==0`）。
+试过把 `mixer.init()` 丢后台线程，结果 WASAPI 的 C 调用不释放 GIL，主循环
+90 帧被拖到 9.5 秒 —— 否掉。最终方案是**根本不碰 SDL 音频**：
+`cli.py::init_pygame_minimal()` 只初始化 display + font；
+`audio/mixer.py::_device_probe()` 用 winmm 快速判定无设备就静音降级
+（行为与原来「8 秒后失败」一致，只是瞬间完成）。
+
+新增 `PYMRP_TIMING=1` 五段打点、`--audio-driver fast|...`（DirectSound 兜底）、
+`--frames N` 窗口模式自动退出。知识库新增
+`docs/17-启动性能：SDL初始化与音频设备探测.md`。
+
+**顺带修掉的测试陷阱**：`gfx_probe` / `net_probe` 的 RX 90 步按键偶发崩溃，
+用 HEAD 原版代码对照复跑同样失败 → 与本次改动无关。根因是 RX 运行时自建的
+`brw/`、`cookie/` 等缓存目录让下一次目录枚举漂移。新增
+`tests/rx_env.py` 构造固定隔离快照（只复制 `cfunction.ext` + `mythroad/*.mrp`），
+两个探针改用它，稳定全绿且刷新采样更充分（211 次 / 局部 194 次）。
+
+**四角按键**：按老板第二版参考图把 `58×59` 压到 **`58×50`**，上下两排中心
+不变、间隙 11px → 20px，圆盘更突出。`runtime/skin.json` 已重建，
+`skin_probe` 同步断言（50 项）。
+
+**验证**：全套 **13 个探针 rc=0**（gfx/net 各重复跑 2 次稳定）；
+`mrp_emu.pyz` 重打包 **102.5 KB**，从单文件版跑 `--demo --frames 4` 首帧
+707ms、`dsm_gm.mrp` 正常。对比图 `out/startup_perf_compare.png`、
+`out/skin_keyheight_compare.png`。
+
+**边界**：`waveOutGetNumDevs()>0` 但 WASAPI 仍打不开的环境（远程桌面虚拟声卡）
+用 `--audio-driver fast`；非 Windows 不做探测，保持 SDL 默认行为。

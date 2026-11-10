@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
@@ -38,6 +39,7 @@ from mrp_emu.catalog import probe_entry_ext  # noqa: E402
 from mrp_emu.consts import KEY_NAME_TO_CODE  # noqa: E402
 from mrp_emu.gfx import Gfx  # noqa: E402
 from mrp_emu.vm import Vm  # noqa: E402
+from rx_env import RX_MRP, make_rx_env  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -135,12 +137,14 @@ RX_STEPS = (["DOWN"] * 6 + ["SELECT"] + ["DOWN"] * 4 + ["SOFT_R"] +
 
 def test_rx_live() -> None:
     print("\n-- 真实 RX 管理器：每次 DSM 刷新后立即比对 fb --")
-    wd = ROOT / "runtime"
-    target = wd / "mythroad" / "R_Xplore_MTK_all（RX管理器）.mrp"
-    ext = wd / "cfunction.ext"
-    if not target.is_file() or not ext.is_file():
+    # 固定隔离环境：不带应用自建的 brw/ cookie/ app240320/ 缓存目录，
+    # 否则目录枚举结果会随上一次运行漂移，90 步按键不可复现（见 rx_env.py）
+    wd, cleanup = make_rx_env(ROOT / "runtime")
+    if wd is None:
         print("  skip 运行环境不完整（缺 cfunction.ext 或 RX 管理器 .mrp）")
         return
+    target = wd / "mythroad" / RX_MRP
+    ext = wd / "cfunction.ext"
 
     calls: list[tuple[int, int, int, int]] = []
     mismatches: list[tuple[int, int, int, int, int]] = []
@@ -197,6 +201,7 @@ def test_rx_live() -> None:
         app.net.shutdown()
     finally:
         Gfx.refresh_rect = orig
+        cleanup()
 
 
 def main() -> int:

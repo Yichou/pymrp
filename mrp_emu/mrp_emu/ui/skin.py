@@ -2,9 +2,10 @@
 
 想换机型只改 JSON，不用碰代码。首次运行会自动写出一份默认的 MTK QVGA 直板机。
 
-v2（导航区扁平化）：参考样式重排 —— 大圆形 D-pad 居中，四角是 58x59 的
+v2（导航区扁平化）：参考样式重排 —— 大圆形 D-pad 居中，四角是 58x50 的
 大圆角方块（上排左右软键 / 下排拨号挂断），配色改为均匀深灰 + 纯色绿红。
-机身因此加高 30px，数字键盘整体下移。
+机身因此加高 30px，数字键盘整体下移。v2.1 按老板新参考图把四角键从 59
+压到 50px，上下两排中心保持不变。
 """
 
 from __future__ import annotations
@@ -28,10 +29,10 @@ def build_default() -> dict:
     """一台典型的 MTK 平台 QVGA 直板机。坐标单位均为像素（1.0 缩放）。"""
     keys = [
         # 四角大圆角方块：上排软键、下排通话键，中间让给大圆盘
-        _key("soft_l", "左软键", (22, 396, 58, 59), "SOFT_L", style="soft", shape="soft"),
-        _key("soft_r", "右软键", (220, 396, 58, 59), "SOFT_R", style="soft", shape="soft"),
-        _key("send", "拨号", (22, 466, 58, 59), "SEND", style="send"),
-        _key("end", "挂断", (220, 466, 58, 59), "END", style="end"),
+        _key("soft_l", "左软键", (22, 400, 58, 50), "SOFT_L", style="soft", shape="soft"),
+        _key("soft_r", "右软键", (220, 400, 58, 50), "SOFT_R", style="soft", shape="soft"),
+        _key("send", "拨号", (22, 470, 58, 50), "SEND", style="send"),
+        _key("end", "挂断", (220, 470, 58, 50), "END", style="end"),
     ]
 
     # 4x3 数字键盘

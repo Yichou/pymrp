@@ -164,10 +164,22 @@ LOADED(1003) → PLAYING(1004) / PAUSED(1005)。
 python run.py --audio on         # 强制开启
 python run.py --audio off        # 完全静音
 python run.py --pcm-rate 16000   # PCM 流采样率（默认 8000，见 mrporting.h 的 //8K）
+python run.py --audio-driver fast   # Windows 走 DirectSound，跳过 WASAPI 慢枚举
 ```
 
 没有音频设备时自动降级为静音，但 API 仍返回成功——老应用遇到失败会反复
 重试，把日志刷爆。
+
+**启动性能**：程序只初始化 `display` + `font` 两个 SDL 子系统，并先用
+winmm 快速判断有没有音频输出端点；无声卡时不会去调 `pygame.init()` /
+`mixer.init()`（这两者在 SDL 2.28 上各要卡 8 秒）。诊断开关：
+
+```bash
+PYMRP_TIMING=1 python run.py --frames 3   # 打印各阶段耗时，跑 3 帧自动退出
+```
+
+`--frames N` 在窗口模式也生效（便于计时与自动化截图）；设计依据见
+`docs/17-启动性能：SDL初始化与音频设备探测.md`。
 
 ## 架构
 
@@ -233,9 +245,10 @@ python tests/selftest.py
 python tests/audio_probe.py       # 声音全链路
 python tests/key_probe.py         # 按键与触摸
 python tests/net_probe.py         # 网络 57 项（回环 TCP/UDP/DNS/cmwap/回调）
-python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花屏回归）
+python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花屏回归，隔离运行环境）
 python tests/cookie_probe.py      # 曲奇 35 项（低地址映射/GBK 容错/短名/c2u/真实 300 帧）
-python tests/skin_probe.py        # 皮肤 48 项（导航区几何/配色采样/命中/按下态/旧 JSON 兼容）
+python tests/skin_probe.py        # 皮肤 50 项（导航区几何/配色采样/命中/按下态/旧 JSON 兼容）
+python tests/startup_probe.py     # 启动 24 项（最小 SDL 初始化/无声卡静音/端到端 <6s）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出

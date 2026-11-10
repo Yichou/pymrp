@@ -65,15 +65,25 @@ def main() -> int:
     check("机身高度 >= 680（容纳大圆盘）", skin["height"] >= 680, f"={skin['height']}")
     check("屏幕仍是 240x320", (skin["screen"]["w"], skin["screen"]["h"]) == (240, 320))
     check("圆盘直径 > 110px", 2 * r > 110, f"={2*r}")
-    check("圆盘直径/按键高 ≈ 2.1",
-          abs(2 * r / corners["soft_l"]["rect"][3] - 2.1) < 0.15,
+    check("四角按键高度压到 50px（v2.1）",
+          all(k["rect"][3] == 50 for k in corners.values()),
+          str([k["rect"][3] for k in corners.values()]))
+    check("圆盘直径/按键高 ≈ 2.48",
+          abs(2 * r / corners["soft_l"]["rect"][3] - 2.48) < 0.06,
           f"={2*r/corners['soft_l']['rect'][3]:.3f}")
     check("OK 圆/圆盘 ≈ 0.37", abs(hole / r - 0.375) < 0.05, f"={hole/r:.3f}")
     check("圆盘/机身宽 ≈ 0.40", abs(2 * r / skin["width"] - 0.40) < 0.05,
           f"={2*r/skin['width']:.3f}")
-    check("四角按键接近正方形",
-          all(abs(k["rect"][2] - k["rect"][3]) <= 4 for k in corners.values()),
+    check("四角按键略扁（宽 > 高，比例 0.8~0.92）",
+          all(k["rect"][2] > k["rect"][3]
+              and 0.80 <= k["rect"][3] / k["rect"][2] <= 0.92
+              for k in corners.values()),
           str([k["rect"][2:] for k in corners.values()]))
+    check("上下两排中心仍对称（间距 18~22px）",
+          18 <= corners["send"]["rect"][1]
+          - (corners["soft_l"]["rect"][1] + corners["soft_l"]["rect"][3]) <= 22,
+          str(corners["send"]["rect"][1]
+              - (corners["soft_l"]["rect"][1] + corners["soft_l"]["rect"][3])))
 
     # 圆盘位于左右两列按键之间
     lx, ly, lw, lh = corners["soft_l"]["rect"]
