@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
                                    "留空自动读系统代理并探测常见本地代理端口")
     p.add_argument("--refresh", action="store_true", help="强制重新拉取在线列表（忽略本地 JSON 缓存）")
     p.add_argument("--cache-days", type=int, default=7, help="在线列表缓存有效天数，默认 7")
+    p.add_argument("--net-proxy", default=os.environ.get("PYMRP_NET_PROXY", ""),
+                   help="MRP 的 TCP 出站 HTTP 代理（支持 CONNECT），如 http://127.0.0.1:7890；"
+                        "默认直连，也可设 PYMRP_NET_PROXY")
+    p.add_argument("--net-off", action="store_true", help="关闭 MRP 网络（所有 socket API 返回 MR_FAILED）")
+    p.add_argument("--strict-null", action="store_true",
+                   help="不映射 0 页，用于抓 NULL 指针解引用（调试用，默认映射以兼容真机行为）")
     return p
 
 
@@ -198,10 +204,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def new_session():
-        v = Vm(log=log)
+        v = Vm(log=log, zero_page=not args.strict_null)
         a = App(v, workdir, log=log, audio=(args.audio != "off"),
                 sample_rate=args.audio_rate, pcm_rate=args.pcm_rate,
-                audio_engine=shared_audio)
+                audio_engine=shared_audio, http_proxy=args.net_proxy,
+                net_enabled=not args.net_off)
         v.app = a
         v.install_tables(MR_TABLE, DSM_FUNCS)
         for t in v.tables.values():
@@ -252,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def back_to_home() -> None:
         nonlocal mrp_loaded, mode
+        app.net.close_network()      # 挂机回桌面时把所有 socket 收干净
         mrp_loaded = False
         if launcher:
             mode = "launcher"
@@ -276,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             return False
 
         ext = args.ext or probe_entry_ext(target)
+        app.net.close_network()      # 换应用前关掉上一个应用的连接
         v, a = new_session()
         a.mrp_name = display or target.name
         try:
@@ -525,6 +534,9 @@ def main(argv: list[str] | None = None) -> int:
                 back_to_home()
         if launcher and mode == "launcher":
             launcher.tick(dt)
+        # 网络异步回调不能在 emu_start() 内重入，统一在主循环这里执行
+        if mode == "mrp" and mrp_loaded:
+            app.net.poll()
         shared_audio.tick()
 
         frame = ui.draw(current_surface())

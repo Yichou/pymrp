@@ -38,6 +38,8 @@ class VirtualFs:
         self.counter = 0
         self.dir_counter = 0
         self.readonly = False
+        # mr_platEx(1204) dsmSwitchPath 维护的逻辑工作路径（相对 root，以 / 结尾）
+        self.work_path = ""
 
     # ------------------------------------------------------------ 路径
     def resolve(self, name: str, must_exist: bool = False) -> Path | None:
@@ -47,14 +49,24 @@ class VirtualFs:
                 n = n[len(p):]
                 break
         n = n.lstrip("/")
-        if not n or n in (".", ".."):
-            return None
-        target = (self.root / n).resolve()
+        # "."/".." 归一化后**钳制在 root 内**：真机上根目录的 ".." 仍是根目录。
+        # 这里若返回 None，ext 会把空结果当 NULL 字符串交给内部 sprintf("%s")，
+        # 直接解引用地址 0 —— RX 管理器浏览根目录时的崩溃就是这么来的。
+        parts: list[str] = []
+        for seg in n.split("/"):
+            if seg in ("", "."):
+                continue
+            if seg == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(seg)
+        target = (self.root.joinpath(*parts) if parts else self.root).resolve()
         try:
             target.relative_to(self.root)
         except ValueError:
-            print(f"[fs] 拒绝沙箱外路径: {name}")
-            return None
+            # 软链接等极少数情况仍可能越界，钳回 root 而不是给 NULL
+            target = self.root
         if must_exist and not target.exists():
             return None
         return target
@@ -198,8 +210,6 @@ class VirtualFs:
 
     def readdir(self, f: int) -> str | None:
         names = self.dirs.get(f)
-        if not names:
-            return None
         if not names:
             return None
         return names.pop(0)

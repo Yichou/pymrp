@@ -99,11 +99,35 @@ python tools/midi2wav.py --demo           # 生成 out/demo_tone.wav 可直接�
   2048.mrp / 火柴谜题 / 丧尸杀戮` 等均可单文件直启，返回 0。
 - 部分 MRP 依赖包外资源（字库、插件、存档目录），缺失时只打 `[fs] 打开失败`
   日志，多数仍能进主菜单。
-- 网络/MD5/短信类 API 为占位（返回失败不崩溃），需要时在
-  `api/impl.py` 补实现。
+- 网络 socket 全家已实现（见下节）；MD5/短信/电话本/相机/图层/图片解码
+  仍为占位（返回失败不崩溃），需要时在 `api/impl.py` 补实现。
 - 声音已完整实现三条通路，但 AMR/M4A/AAC 解码器不在范围内。
 - 已实测注意：本机 `python` 命令是 3.13，依赖装在 3.12；`run.py` 会用
   当前解释器，若报缺依赖先 `pip install -r requirements.txt`。
+
+## 网络模块与 RX 崩溃修复（2026-11-10）
+
+按 mrpoid `network.c` + vmrp `dl_bridge.c` 补齐 `dsm_require_funcs` 的 11 个
+网络底层函数（原来全是返回 `MR_FAILED` 的 stub）：
+
+- `net.py`：10 槽 socket 状态机、TCP/UDP、阻塞/非阻塞 connect、
+  `getSocketState`、DNS 缓存与超时、cmwap `10.0.0.172` 代理、
+  可选 HTTP CONNECT 出站代理（`--net-proxy` / `PYMRP_NET_PROXY`）。
+- 异步 `NETWORK_CB(result, userData)` 排队到主循环，用 `vm.call_arm()`
+  手动切 r9 执行（不在 `emu_start()` 里重入）。
+- 两张表同名函数参数不同：`dsm_require_funcs` 多一个 `userData`，
+  已在 `dsmfuncs.py` 分开别名。
+
+**RX 管理器崩溃**：复现出 `UC_ERR_READ_UNMAPPED @ PC=0x8EF1C`，
+capstone 反汇编确认是 ext 内 `strnlen(NULL)`。根因链：浏览根目录 `./..`
+→ 旧沙箱拒绝并回 NULL → ext 把 NULL 交给 `sprintf("%s")` → 读地址 0。
+真机 0 地址可读，Unicorn 没映射才炸。修复三层：`vm.py` 映射 64KB 零页、
+`fs.py` 把 `..` 钳制在 root 内、`impl.py` 完整实现 `mr_platEx(1204)`
+（正确写回 `*output` / `*output_len`）；另加非法内存访问诊断钩子与
+`--strict-null` 调试开关。90 步真实按键 + 945 次路径切换实测无崩溃。
+
+自检 `tests/net_probe.py` 57 项全过（全部本机回环，不需联网）；原有 6 套
+自检无回归。详见 [docs/13](docs/13-网络模块与内存健壮性.md)。
 
 ## Git 仓库与知识库（2026-11-10）✅
 

@@ -38,8 +38,9 @@ ALIAS = {
     "closedir": "closedir",
     "getLen": "mr_getLen",
     "drawBitmap": "mr_drawBitmap",
-    "getHostByName": "mr_getHostByName",
-    "initNetwork": "mr_initNetwork",
+    # 这两个在 ext 侧多一个 userData 参数，必须用 3 参数版实现
+    "getHostByName": "dsm_getHostByName",
+    "initNetwork": "dsm_initNetwork",
     "mr_closeNetwork": "mr_closeNetwork",
     "mr_socket": "mr_socket",
     "mr_connect": "mr_connect",

@@ -35,6 +35,11 @@ python run.py runtime/mythroad/box.mrp     # 跳过桌面，单跑一个 MRP
 > 本地列表扫描运行环境下所有 `.mrp`，只读每个文件的前 240 字节取元数据。
 > 详见 [docs/12 启动界面与游戏中心](docs/12-启动界面与游戏中心.md)。
 
+> MRP 应用自己的网络也已打通（TCP/UDP、DNS、cmwap 代理、异步回调）。
+> 系统开了 Clash 想让 MRP 走它：`python run.py --net-proxy http://127.0.0.1:7890`。
+> 完整接口契约与 RX 管理器崩溃复盘见
+> [docs/13 网络模块与内存健壮性](docs/13-网络模块与内存健壮性.md)。
+
 ## 文档入口
 
 **从 [docs/README.md](docs/README.md) 开始**。三分钟看懂这套系统 →
@@ -53,7 +58,8 @@ cd mrp_emu
 python tests/selftest.py       # ARM 执行 + 桥接链路
 python tests/audio_probe.py    # 声音 70 项断言
 python tests/key_probe.py      # 按键/触摸
-python tests/launcher_probe.py # 启动界面 / 游戏中心 / 点击直达启动（34 项）
+python tests/launcher_probe.py # 启动界面 / 游戏中心 / 点击直达启动（35 项）
+python tests/net_probe.py      # 网络 57 项（TCP/UDP/DNS/cmwap/回调）+ RX 崩溃回归
 ```
 
 ## 资料声明

@@ -519,8 +519,55 @@ def mr_platEx(ctx, vm):
             ctx.ret(result)
             return
 
+    if code == 1204:                    # MR_SWITCHPATH / dsmSwitchPath
+        ctx.ret(_dsm_switch_path(ctx, vm, input_addr, input_len,
+                                 output_ptr, output_len_ptr))
+        return
+
     vm.app.log(f"[mr_platEx] code=0x{code:X}")
     ctx.ret(MR_SUCCESS)
+
+
+def _dsm_switch_path(ctx, vm, iaddr: int, ilen: int,
+                     optr: int, olenptr: int) -> int:
+    """复刻 mrpoid/dsm.c 的 ``dsmSwitchPath()``（mr_plat.h: MR_SWITCHPATH 1204）。
+
+    ``output`` 是 ``uint8**``、``output_len`` 是 ``int32*``——两者都要写回，
+    否则应用拿到野指针，下一次 sprintf("%s") 就会解引用 NULL 崩掉。
+    分支语义：Y 查当前绝对路径 / Z 回启动目录 / X 隐藏根 / A、B 隐藏盘 / C 用户盘。
+    """
+    mem, fs = ctx.mem, vm.app.fs
+    if not iaddr:
+        return MR_FAILED
+    raw = _read_blob(vm, iaddr, min(max(0, ilen), 256))
+    arg = raw.split(b"\x00")[0].decode("gbk", "replace")
+    if ilen <= 0:
+        fs.work_path = ""
+    elif arg[:1].upper() == "Y":
+        text = "c:/" + (fs.work_path or "")
+        ptr = vm.app.scratch_str(text, "dsm_path", 256)
+        if optr and mem.valid(optr, 4):
+            mem.set_u32(optr, ptr)
+        if olenptr and mem.valid(olenptr, 4):
+            mem.set_u32(olenptr, len(text.encode("gbk", "replace")))
+    elif arg[:1].upper() == "Z":
+        fs.work_path = "mythroad/"
+    elif arg[:1].upper() == "X":
+        fs.work_path = "mythroad/disk/x/"
+    elif arg[:1].upper() in ("A", "B"):
+        drive = arg[0].lower()
+        sub = arg[3:] if len(arg) > 3 else ""
+        fs.work_path = f"mythroad/disk/{drive}/" + sub
+    elif len(arg) > 3:
+        rel = arg[3:].replace("\\", "/").lstrip("/")
+        if rel.lower().startswith("mythroad/"):
+            rel = rel[len("mythroad/"):]
+        fs.work_path = (rel.rstrip("/") + "/") if rel else ""
+    else:
+        fs.work_path = ""
+    fs.work_path = fs.work_path.replace("\\", "/")
+    vm.app.log(f"[platEx 1204] {arg!r} -> work_path={fs.work_path!r}")
+    return MR_SUCCESS
 
 
 @api("mr_ferrno")
@@ -705,15 +752,104 @@ def mr_findStop(ctx, vm):
     ctx.ret(vm.app.fs.find_stop(ctx.arg(0)))
 
 
-# ==================================================================== 网络（占位）
-def _net_stub(ctx, vm):
-    ctx.ret(MR_FAILED)
+# ==================================================================== 网络
+#
+# 两张表里同名函数的参数并不一样，别混用：
+#   mr_table        : mr_initNetwork(cb, mode) / mr_getHostByName(name, cb)
+#   dsm_require_funcs: initNetwork(cb, mode, userData) / getHostByName(name, cb, userData)
+# 见 vmrp/dl_dsm.h 的 DSM_REQUIRE_FUNCS 与 mr/mrporting.h。
+def _net(ctx, vm):
+    return getattr(vm.app, "net", None)
 
 
-for _n in ("mr_initNetwork", "mr_closeNetwork", "mr_getHostByName", "mr_socket",
-           "mr_connect", "mr_closeSocket", "mr_recv", "mr_recvfrom", "mr_send",
-           "mr_sendto", "mr_getSocketState"):
-    IMPL[_n] = _net_stub
+def _net_ret(ctx, value) -> None:
+    ctx.ret(MR_FAILED if value is None else value)
+
+
+@api("mr_initNetwork")
+def mr_initNetwork(ctx, vm):
+    """MRP 标准版：int32 mr_initNetwork(MR_INIT_NETWORK_CB cb, const char* mode)"""
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.init_network(ctx.arg(0), _s(ctx, 1), 0) if net else None)
+
+
+@api("dsm_initNetwork")
+def dsm_initNetwork(ctx, vm):
+    """ext 版：initNetwork(NETWORK_CB cb, const char* mode, void* userData)"""
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.init_network(ctx.arg(0), _s(ctx, 1), ctx.arg(2))
+             if net else None)
+
+
+@api("mr_getHostByName")
+def mr_getHostByName(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.get_host_by_name(_s(ctx, 0), ctx.arg(1), 0)
+             if net else None)
+
+
+@api("dsm_getHostByName")
+def dsm_getHostByName(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.get_host_by_name(_s(ctx, 0), ctx.arg(1), ctx.arg(2))
+             if net else None)
+
+
+@api("mr_closeNetwork")
+def mr_closeNetwork(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.close_network() if net else None)
+
+
+@api("mr_socket")
+def mr_socket(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.socket(ctx.arg(0), ctx.arg(1)) if net else None)
+
+
+@api("mr_connect")
+def mr_connect(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.connect(ctx.arg(0), ctx.arg(1), ctx.arg(2), ctx.arg(3))
+             if net else None)
+
+
+@api("mr_getSocketState")
+def mr_getSocketState(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.get_socket_state(ctx.arg(0)) if net else None)
+
+
+@api("mr_closeSocket")
+def mr_closeSocket(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.close_socket(ctx.arg(0)) if net else None)
+
+
+@api("mr_recv")
+def mr_recv(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.recv(ctx.arg(0), ctx.arg(1), ctx.arg(2)) if net else None)
+
+
+@api("mr_send")
+def mr_send(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.send(ctx.arg(0), ctx.arg(1), ctx.arg(2)) if net else None)
+
+
+@api("mr_recvfrom")
+def mr_recvfrom(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.recvfrom(ctx.arg(0), ctx.arg(1), ctx.arg(2),
+                               ctx.arg(3), ctx.arg(4)) if net else None)
+
+
+@api("mr_sendto")
+def mr_sendto(ctx, vm):
+    net = _net(ctx, vm)
+    _net_ret(ctx, net.sendto(ctx.arg(0), ctx.arg(1), ctx.arg(2),
+                             ctx.arg(3), ctx.arg(4)) if net else None)
 
 
 # ==================================================================== 弹窗类（占位句柄）

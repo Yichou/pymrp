@@ -15,6 +15,7 @@ from typing import Callable
 from unicorn import (
     UC_ARCH_ARM,
     UC_HOOK_CODE,
+    UC_HOOK_MEM_INVALID,
     UC_MODE_ARM,
     UC_PROT_ALL,
     Uc,
@@ -49,15 +50,24 @@ from .memory import MrpMemory
 
 STOP_ADDRESS = CODE_ADDRESS          # 所有 runCode 的停止地址
 
+# 真 MTK 机器的 0 地址是向量表/ROM，可读；老 MRP 的 sprintf("%s") 拿到
+# NULL 时会读到 0 并当成空串，不会炸。Unicorn 默认不映射 0 页，于是
+# "读未映射" 直接终止整个模拟器 —— RX 管理器浏览根目录就是这么崩的。
+ZERO_PAGE_SIZE = 0x10000
+
 
 class Vm:
-    def __init__(self, log: Callable[[str], None] = print) -> None:
+    def __init__(self, log: Callable[[str], None] = print,
+                 zero_page: bool = True) -> None:
         self.log = log
         self.mem = MrpMemory()
         self.app = None
+        self.zero_page = zero_page
+        self.invalid_accesses: list[tuple[int, int, int]] = []
 
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         self._map_memory()
+        self._install_mem_guard()
 
         # 满递减栈
         self.uc.reg_write(UC_ARM_REG_SP, STACK_ADDRESS + STACK_SIZE)
@@ -90,6 +100,24 @@ class Vm:
         else:
             self._sync_mem = False
 
+        if self.zero_page:
+            try:
+                self.uc.mem_map(0, ZERO_PAGE_SIZE, UC_PROT_ALL)
+                self.uc.mem_write(0, b"\x00" * ZERO_PAGE_SIZE)
+                self.log(f"[vm] 零页 0x0-0x{ZERO_PAGE_SIZE:X} 已映射（兼容 NULL 字符串）")
+            except UcError as exc:  # pragma: no cover
+                self.log(f"[vm] 零页映射失败（不影响主内存）: {exc}")
+
+    def _install_mem_guard(self) -> None:
+        """记录非法内存访问地址，崩溃时给出可诊断信息。"""
+        def guard(uc, access, address, size, value, user_data):
+            self.invalid_accesses.append(
+                (address, size, uc.reg_read(UC_ARM_REG_PC)))
+            if len(self.invalid_accesses) > 32:
+                del self.invalid_accesses[:-32]
+            return False        # 不修复，仍按原语义抛 UcError
+        self.uc.hook_add(UC_HOOK_MEM_INVALID, guard)
+
     def sync_in(self) -> None:
         if getattr(self, "_sync_mem", False):
             self.uc.mem_write(START_ADDRESS, bytes(self.mem.buf))
@@ -108,6 +136,11 @@ class Vm:
         except UcError as exc:
             pc = self.uc.reg_read(UC_ARM_REG_PC)
             self.log(f"[vm] 执行异常 {exc} @ PC=0x{pc:X}")
+            if self.invalid_accesses:
+                tail = self.invalid_accesses[-4:]
+                self.log("[vm] 非法访问: " + ", ".join(
+                    f"@0x{a:X}({n}B) PC=0x{p:X}" for a, n, p in tail))
+                self.invalid_accesses.clear()
             raise
         finally:
             self.sync_out()

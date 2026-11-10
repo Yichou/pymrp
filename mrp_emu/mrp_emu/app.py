@@ -8,12 +8,14 @@ from pathlib import Path
 from .audio import AudioEngine
 from .fs import VirtualFs
 from .gfx import Gfx
+from .net import NetEngine
 
 
 class App:
     def __init__(self, vm, workdir: str | Path, log=print,
                  audio: bool = True, sample_rate: int = 44100,
-                 pcm_rate: int = 8000, audio_engine=None) -> None:
+                 pcm_rate: int = 8000, audio_engine=None,
+                 http_proxy: str = "", net_enabled: bool = True) -> None:
         self.vm = vm
         self.log = log
         self.fs = VirtualFs(workdir)
@@ -22,6 +24,9 @@ class App:
         # 避免反复 pygame.mixer.init() 和缓存泄漏。
         self.audio = audio_engine or AudioEngine(
             sample_rate=sample_rate, enabled=audio, log=log, pcm_rate=pcm_rate)
+        # 网络状态机跟 VM 绑定（回调要 call_arm），所以每次重建 VM 也重建一份。
+        self.net = NetEngine(vm, log=log, enabled=net_enabled,
+                             http_proxy=http_proxy)
 
         self.t0 = time.monotonic()
         self.timer_interval = 0

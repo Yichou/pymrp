@@ -136,7 +136,12 @@ def main() -> int:
     app.fs.close(fh)
     check("getLen 正确", app.fs.get_len("hello.dat") == 30, f"={app.fs.get_len('hello.dat')}")
     check("info 识别为文件", app.fs.info("hello.dat") == 1)
-    check("沙箱拦截 ../", app.fs.resolve("../../etc/passwd") is None)
+    # 2026-11-10：语义改为「钳制在 root 内」而不是返回 NULL。
+    # 返回 NULL 会让 ext 把空结果当 NULL 字符串交给 sprintf("%s")，
+    # 在 Unicorn 里解引用地址 0 直接崩（RX 管理器实测）。
+    _esc = app.fs.resolve("../../etc/passwd")
+    check("沙箱把 ../ 钳制在 root 内",
+          _esc is not None and _esc.is_relative_to(app.fs.root), str(_esc))
 
     print("\n== 5. 图形 ==")
     px = 0xF800  # 红

@@ -47,12 +47,14 @@ mrp_emu/
 
 内存、文件系统全套（含目录枚举）、RGB565 显示、定时器、时间日期、系统信息、
 随机数、按键/触摸事件、`mr_playSound/stopSound`（MIDI 合成 + WAV + PCM 流）、
-`mr_plat(102/103/1302)`、`mr_platEx(201x~216x, 222x~225x)` 状态机、UI 控件骨架。
+`mr_plat(102/103/1302)`、`mr_platEx(201x~216x, 222x~225x)` 状态机、UI 控件骨架、
+**网络 socket 全家**（TCP/UDP/DNS/cmwap/非阻塞状态机/ARM 异步回调，见
+[13 网络模块](13-网络模块与内存健壮性.md)）、`mr_platEx(1204)` 路径切换。
 
 ### 占位（返回失败/IGNORE，不崩溃）
 
-网络 socket 全家、MD5、短信、电话本、相机/录音、图层系统、图片解码、
-`mr_getCharBitmap`（唯一未实现的常用函数）、天气/闹钟/QQ/NES。
+MD5、短信、电话本、相机/录音、图层系统、图片解码、
+`mr_getCharBitmap`（唯一未实现的常用函数）、天气/闹钟/NES。
 
 ### 数据槽填值示例
 
@@ -96,7 +98,10 @@ python mrp_emu.pyz                       # 单文件版（需先 python build_py
 
 ## 6. 已知边界
 
-- **网络类**应用全部不可用（无 socket），对应应用会报连接失败——协议栈是独立工程；
+- **网络已实现**（见 [13](13-网络模块与内存健壮性.md)）：IPv4 TCP/UDP、DNS、
+  cmwap 代理、非阻塞 connect + `getSocketState`、可选 HTTP CONNECT 出站代理。
+  但 2008 年前后的 MRP 服务器几乎全部下线，「接口通」不等于「有服务」；
+  不支持 IPv6 / bind / listen；
 - **`mr_getCharBitmap`** 未实现：依赖它的自绘文字应用会缺字（多数应用用内置 GB 字库，不受影响）；
 - **MP3/AMR/M4A/AAC** 解码未做（需编解码库），明确返回失败并打日志；
 - **运行时文件**（`cfunction.ext`、字库、游戏）不随源码分发在本仓库的 git 中——
