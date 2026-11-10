@@ -364,6 +364,26 @@ def mr_drawBitmap(ctx, vm):
     vm.app.gfx.draw_bitmap(bmp, x, y, w, h)
 
 
+@api("dsm_drawBitmap")
+def dsm_drawBitmap(ctx, vm):
+    """dsm_require_funcs.drawBitmap —— 离屏全屏缓冲的脏矩形同步。
+
+    与 mr_table 的 ``mr_drawBitmap`` 同名但语义不同！mrpoid 里两条路径分别是：
+
+    * ``mr/mythroad.c::mr_drawBitmap`` -> ``emu_drawBitmap``：紧凑 ``w x h`` 位图，
+      源 stride = w（应用自己贴图标/图片时用）；
+    * ``dsm.c::mr_drawBitmap`` -> ``emu_bitmapToscreen``：整屏缓冲，
+      源 stride = 屏宽，x/y 是矩形左上角（DSM 刷屏时用）。
+
+    之前 dsmfuncs.ALIAS 把两者指向同一个实现，导致 RX 管理器局部刷新时
+    把屏顶标题栏贴到列表行上，出现重复标题栏与蓝色斜纹（2026-11-10 修复）。
+    """
+    bmp = ctx.arg(0)
+    x, y = ctx.sarg(1), ctx.sarg(2)
+    w, h = ctx.arg(3), ctx.arg(4)
+    vm.app.gfx.refresh_rect(bmp, x, y, w, h)
+
+
 @api("_DrawBitmap", "_DrawBitmapEx")
 def draw_bitmap_ex(ctx, vm):
     mr_drawBitmap(ctx, vm)

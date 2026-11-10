@@ -192,3 +192,43 @@ CONNECT 隧道 + 自造 200 响应；CLI 新增 `--dns-map` / `--wap-proxy`。
 - 文档生成管线：`tools/extract_manual.py`（CHM→MD）与 `tools/build_docs.py`
   （主题聚合），手册更新后可一键重生成。
 - 仓库 git 代理已固化 Clash 7890（local config），直接 git push 即可。
+
+## RX 管理器界面错乱修复（2026-11-10）✅
+
+老板反馈截图：RX 管理器里「RX管理器」标题栏重复出现 3 次、蓝色横条夹斜向噪点、
+列表文字错位。已定位并修复，**不是字库/图层/资源缺失问题**。
+
+**根因**：`dsm_require_funcs.drawBitmap` 与 `mr_table.mr_drawBitmap` 同名同签名，
+但语义完全不同。前者是「把 DSM 离屏全屏缓冲的脏矩形同步到屏幕」，源行跨度是
+**屏宽 240**、`x/y` 同时是源矩形起点；后者才是「贴一块紧凑 `w×h` 位图」。
+之前 `api/dsmfuncs.py::ALIAS` 把两者指向同一实现，局部刷新 `(3,61,226,26)`
+时按 `w=226` 跨度读，等于把屏顶标题栏贴到每个列表行 → 重复标题栏 + 斜纹。
+整屏刷新 `(0,0,240,320)` 时 `w==屏宽` 两种语义恰好等价，所以静止首帧正常、
+一滚动就花，非常有迷惑性。mrpoid 源码 `emulator.c:737/808` 与 `dsm.c:1436`
+提供了 A 级证据；实测 `fb_addr=0x280000`、`dsm_buf=0x2A8180`，104 次调用中
+88 次是局部矩形。
+
+**改动**：
+
+| 文件 | 内容 |
+|---|---|
+| `mrp_emu/gfx.py` | 新增 `Gfx.refresh_rect()`：按屏宽 stride 取源、只写脏矩形、裁剪/同址/退化处理 |
+| `mrp_emu/api/impl.py` | 新增 `dsm_drawBitmap()`，与紧凑位图实现分离 |
+| `mrp_emu/api/dsmfuncs.py` | `ALIAS["drawBitmap"]` 改绑 `dsm_drawBitmap` |
+| `mrp_emu/tests/gfx_probe.py` | 新增 21 项：绑定检查、stride 语义、紧凑语义敏感性对照、真实 RX 逐次刷新逐像素比对 |
+| `mrp_emu/tests/rx_gfx_trace.py` | 新增诊断工具：桥接调用明细、离屏缓冲导出、pyz 加载复测 |
+| `docs/06`、`docs/08`、`docs/11`、`mrp_emu/README.md` | 知识库沉淀（源码、实测参数、陷阱条目） |
+| `mrp_emu/mrp_emu.pyz` | 重打包 98.1 KB，修复已进入单文件版 |
+
+**验证**：
+
+- `gfx_probe.py` 21/21 通过：真实 RX 90 步按键期间 104 次 DSM 刷新，
+  **fb 与离屏缓冲逐像素不一致 0 次**（局部 88 次）；
+- 全套回归无退化：`selftest / key / touch / audio / launch / launcher /
+  net / keymap / gfx / legacy_net` 全部 rc=0；
+- 从 `mrp_emu.pyz` 加载代码（`PYMRP_FROM_PYZ=1`）复测 RX，同一帧界面完整；
+- 三联对比图 `mrp_emu/out/rx_gfx_before_after.png`：老板截图 / 修复前复现 / 修复后。
+
+**边界**：`mythroad/plugins/embrw.mrp`、`advbar.mrp` 等运行时插件仍缺失，
+会打 `[fs] 打开失败` 日志（不影响本界面）；本次修复只针对刷屏语义，
+不改动触控、字库、图层系统。

@@ -37,7 +37,9 @@ ALIAS = {
     "readdir": "readdir",
     "closedir": "closedir",
     "getLen": "mr_getLen",
-    "drawBitmap": "mr_drawBitmap",
+    # DSM 的 drawBitmap 是「整屏缓冲脏矩形同步」，不是紧凑位图 blit，
+    # 不能复用 mr_table 的 mr_drawBitmap（见 impl.dsm_drawBitmap）。
+    "drawBitmap": "dsm_drawBitmap",
     # 这两个在 ext 侧多一个 userData 参数，必须用 3 参数版实现
     "getHostByName": "dsm_getHostByName",
     "initNetwork": "dsm_initNetwork",

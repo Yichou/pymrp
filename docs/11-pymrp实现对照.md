@@ -11,7 +11,7 @@ mrp_emu/
 ├── bridge.py            函数表 + UC_HOOK_CODE 拦截（syscall 机制核心）
 ├── vm.py                Unicorn 封装：run_code / 事件 / timer / r9 防御
 ├── fs.py                虚拟文件系统（路径沙箱 + 相对路径容错）
-├── gfx.py               RGB565 帧缓冲 + 字体缓存
+├── gfx.py               RGB565 帧缓冲 + 紧凑位图 blit + DSM 脏矩形同步 + 字体缓存
 ├── app.py               App 门面（fs/gfx/audio 组装）
 ├── cli.py               主循环、键鼠输入、截图、统计
 ├── api/
@@ -45,7 +45,9 @@ mrp_emu/
 
 ### 真实现（有完整行为）
 
-内存、文件系统全套（含目录枚举）、RGB565 显示、定时器、时间日期、系统信息、
+内存、文件系统全套（含目录枚举）、RGB565 显示（**两条 drawBitmap 路径分开**：
+`mr_drawBitmap` 紧凑位图 / `dsm_drawBitmap` 全屏脏矩形同步，见 [06 §1.3](06-图形与图层专题.md#13-同名陷阱两条-drawbitmap-路径的-stride-不同a-级源码--实测)）、
+定时器、时间日期、系统信息、
 随机数、按键/触摸事件、`mr_playSound/stopSound`（MIDI 合成 + WAV + PCM 流）、
 `mr_plat(102/103/1302)`、`mr_platEx(201x~216x, 222x~225x)` 状态机、UI 控件骨架、
 **网络 socket 全家**（TCP/UDP/DNS/cmwap/非阻塞状态机/ARM 异步回调，见

@@ -232,9 +232,16 @@ python tests/selftest.py
 python tests/audio_probe.py       # 声音全链路
 python tests/key_probe.py         # 按键与触摸
 python tests/net_probe.py         # 网络 57 项（回环 TCP/UDP/DNS/cmwap/回调）
+python tests/gfx_probe.py         # 图形 21 项（DSM 脏矩形语义 + RX 花屏回归）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
+python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出
 ```
+
+> 图形花屏排查用 `tests/rx_gfx_trace.py`：无窗口跑真实 RX 管理器，产出
+> `out/rx_trace_*_calls.txt`（全部桥接调用与 `drawBitmap` 参数）、
+> `*_dsmbuf.png`（DSM 离屏全屏缓冲）与逐帧截图。
+> 加 `PYMRP_FROM_PYZ=1` 可从 `mrp_emu.pyz` 加载代码复测打包产物。
 
 `selftest.py` 用硬编码 ARM 机器码直接调用桥接槽位，验证：ARM 执行、内存
 共享、参数/返回值传递、文件系统、图形输出、UI 命中测试。

@@ -128,6 +128,53 @@ class Gfx:
         dst[dy0:dy0 + ch, dx0:dx0 + cw] = src[sy0:sy0 + ch, sx0:sx0 + cw]
         self.mem.write(self.fb_addr, dst.tobytes())
 
+    def refresh_rect(self, buf_addr: int, x: int, y: int,
+                     w: int, h: int) -> bool:
+        """把离屏「全屏缓冲」的脏矩形同步到帧缓冲（DSM 刷屏语义）。
+
+        来源：mrpoid ``dsm.c::mr_drawBitmap`` -> ``emulator.c::emu_bitmapToscreen``
+
+        .. code-block:: c
+
+            for (i = y; i <= y1; i++)
+                memcpy(p + sw*i + x, data + sw*i + x, w*2);
+
+        也就是说 ``bmp`` 是 **240x320 整屏缓冲的基址**，源行跨度是屏宽
+        （不是 ``w``），x/y 既是源矩形起点也是目标位置。mythroad/DSM 把 UI
+        画在自己的离屏缓冲里，滚动列表时只同步变脏的那几行。
+
+        这里若按紧凑 ``w x h`` 位图去读，就会把屏幕左上角（标题栏）贴到
+        y=61/90/119 的列表行上 —— 正是 RX 管理器「重复标题栏 + 蓝色斜纹」
+        花屏的根因。整屏刷新 (0,0,240,320) 时两种语义恰好等价，所以静止
+        首帧正常、一滚动就花，非常有迷惑性。
+
+        返回 True 表示按全屏 stride 同步成功；源缓冲不足整屏时退化成
+        :meth:`draw_bitmap` 的紧凑语义并返回 False（兼容个别 DSM 变体）。
+        """
+        W, H = self.w, self.h
+        if not buf_addr or w <= 0 or h <= 0:
+            return False
+        if buf_addr == self.fb_addr:
+            return True                      # 源就是屏幕本身，内容已在屏上
+
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        if x1 <= x0 or y1 <= y0:
+            return False
+        if not self.mem.valid(buf_addr, W * H * 2):
+            self.draw_bitmap(buf_addr, x, y, w, h)
+            return False
+
+        rows = y1 - y0
+        span = rows * W * 2
+        src = np.frombuffer(self.mem.read(buf_addr + y0 * W * 2, span),
+                            dtype="<u2").reshape(rows, W)
+        dst = np.frombuffer(self.mem.read(self.fb_addr + y0 * W * 2, span),
+                            dtype="<u2").reshape(rows, W).copy()
+        dst[:, x0:x1] = src[:, x0:x1]
+        self.mem.write(self.fb_addr + y0 * W * 2, dst.tobytes())
+        return True
+
     # ------------------------------------------------------------ 渲染
     def surface(self) -> pygame.Surface:
         a = self.array()
