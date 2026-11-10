@@ -65,6 +65,26 @@ class ArmCall:
         sp = self.uc.reg_read(UC_ARM_REG_SP)
         return struct.unpack("<I", self.uc.mem_read(sp + (n - 4) * 4, 4))[0]
 
+    def qarg(self, n: int) -> int:
+        """第 n 个（1-based）参数按 64 位整数取。
+
+        AAPCS：64 位变参一律走栈，占 8 字节且 8 字节对齐；寄存器区放不下。
+        """
+        if n < 4:
+            return self.arg(n) & 0xFFFFFFFFFFFFFFFF
+        sp = self.uc.reg_read(UC_ARM_REG_SP)
+        off = ((n - 4) * 4 + 7) & ~7
+        return struct.unpack("<q", self.uc.mem_read(sp + off, 8))[0]
+
+    def farg(self, n: int) -> float:
+        """第 n 个（1-based）参数按 double 取（%f/%e/%g）。
+
+        AAPCS：浮点变参走栈，8 字节、8 字节对齐。
+        """
+        sp = self.uc.reg_read(UC_ARM_REG_SP)
+        off = ((n - 4) * 4 + 7) & ~7
+        return struct.unpack("<d", self.uc.mem_read(sp + off, 8))[0]
+
     def sarg(self, n: int) -> int:
         v = self.arg(n)
         return v - 0x100000000 if v & 0x80000000 else v

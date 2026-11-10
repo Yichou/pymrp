@@ -251,6 +251,8 @@ python tests/skin_probe.py        # 皮肤 50 项（导航区几何/配色采样
 python tests/startup_probe.py     # 启动 24 项（最小 SDL 初始化/无声卡静音/端到端 <6s）
 python tests/exit_probe.py        # 退出 23 项（mr_exit 收尾：停声音/关 socket/关句柄/回桌面）
 python tests/crash_probe.py       # 崩溃 15 项（MRP 野指针隔离：崩溃不带走模拟器）
+python tests/fmt_probe.py        # 格式化 44 项（sprintf 格式覆盖/浮点/长度修饰符/返回值字节数）
+python tests/table_probe.py      # 槽位表 11 项（与 mrpoid 官方表的差异清单）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出

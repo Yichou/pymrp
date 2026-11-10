@@ -71,6 +71,13 @@ def F(pos: int, name: str, fn=None, init=None, note: str = "") -> BridgeFunc:
 
 MR_TABLE: list[BridgeFunc] = [
     # ---- 内存 / 字符串 ----
+    # 槽位顺序说明（2026-11-10 核对）：
+    #   0x000–0x040 与 mrpoid 官方 mr/mythroad.c::_mr_c_function_table[] 完全一致；
+    #   从 0x048 起与官方**错位一格**——官方那里是 mr_sprintf，我们没有这一槽。
+    #   我们的顺序是照 cfunction.ext 反推的（0x054/0x058 是 ext 里真实的空洞，
+    #   所以放 reserve0/reserve1），且实测 4 个真实 MRP 从不调用 0x048 之后的槽位
+    #   （应用走 DSM 层 51 槽；C 库由 ext 自己的 _mr_c_function_new 注册接管）。
+    #   差异清单与风险见 tests/table_probe.py、docs/19。
     F(0x000, "mr_malloc"),
     F(0x004, "mr_free"),
     F(0x008, "mr_realloc"),

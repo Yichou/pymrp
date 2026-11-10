@@ -75,70 +75,239 @@ def _read_blob(vm, addr: int, length: int) -> bytes:
     return mem.read(addr, n)
 
 
-def _fmt(fmt: str, args: list[int], mem) -> str:
-    """迷你 printf：够 MRP 用即可。"""
-    out: list[str] = []
-    i = 0
-    ai = 0
-    n = len(fmt)
+_FMT_FLAG = "-+ #0'"
+
+
+def _parse_fmt(fmt: str) -> list[dict]:
+    """把格式串拆成「文本段 + 转换项」列表。
+
+    支持：``%`` ``d i u o x X f e g G a A c s p n``、长度修饰符
+    ``hh h l ll L j z t``、``- + 空格 # 0 '`` 标志、宽度、精度，以及
+    ``*`` 动态宽度/精度。
+    """
+    out: list[dict] = []
+    lit: list[str] = []
+    i, n = 0, len(fmt)
     while i < n:
         c = fmt[i]
         if c != "%":
-            out.append(c)
+            lit.append(c)
             i += 1
             continue
         i += 1
-        if i >= n:
-            break
-        spec = ""
-        while i < n and fmt[i] in "-+ #0123456789.":
-            spec += fmt[i]
+        if i < n and fmt[i] == "%":
+            lit.append("%")
             i += 1
+            continue
+        if lit:
+            out.append({"kind": "text", "lit": "".join(lit)})
+            lit = []
+        j = i
+        while j < n and fmt[j] in _FMT_FLAG:
+            j += 1
+        flags = fmt[i:j]
+        i = j
+        width = None
+        width_star = False
+        if i < n and fmt[i] == "*":
+            width_star = True
+            i += 1
+        else:
+            j = i
+            while j < n and fmt[j].isdigit():
+                j += 1
+            if j > i:
+                width = int(fmt[i:j])
+                i = j
+        prec = None
+        prec_star = False
+        if i < n and fmt[i] == ".":
+            i += 1
+            if i < n and fmt[i] == "*":
+                prec_star = True
+                i += 1
+            else:
+                j = i
+                while j < n and fmt[j].isdigit():
+                    j += 1
+                prec = int(fmt[i:j]) if j > i else 0
+                i = j
+        lenmod = ""
+        # 注意：不要把 'q' 收进来（ARM 上 %q 不是转换符，收了会把 %q 吃掉）
+        if i < n and fmt[i] in "hlLjzt":
+            lenmod = fmt[i]
+            i += 1
+            if lenmod in "lL" and i < n and fmt[i] == "l":
+                lenmod = "ll"
+                i += 1
         if i >= n:
             break
         conv = fmt[i]
         i += 1
+        out.append({"kind": "conv", "conv": conv, "flags": flags, "width": width,
+                    "width_star": width_star, "prec": prec, "prec_star": prec_star,
+                    "lenmod": lenmod})
+    if lit:
+        out.append({"kind": "text", "lit": "".join(lit)})
+    return out
 
-        if conv == "%":
-            out.append("%")
-            continue
-        if conv == "n":
-            ai += 1
-            continue
 
-        raw = args[ai] if ai < len(args) else 0
-        ai += 1
-        if conv == "s":
-            out.append(mem.cstr(raw) if raw else "(null)")
-        elif conv == "c":
-            out.append(chr(raw & 0xFF))
-        elif conv in "di":
-            v = raw - 0x100000000 if raw & 0x80000000 else raw
-            out.append(_pad(spec, str(v)))
-        elif conv == "u":
-            out.append(_pad(spec, str(raw & 0xFFFFFFFF)))
-        elif conv in "xX":
-            v = raw & 0xFFFFFFFF
-            s = f"{v:x}" if conv == "x" else f"{v:X}"
-            out.append(_pad(spec, s))
-        elif conv in "lL":
-            # %ld 之类已经在 spec 扫描时被吃掉 l，这里兜底
-            out.append(_pad(spec, str(raw)))
+def _collect(specs: list[dict], get_int, get_q, get_f) -> dict[int, tuple[str, object]]:
+    """按 C 的顺序取变参：``*`` 宽度、``*`` 精度先于转换符本身的参数。"""
+    vals: dict[int, tuple[str, object]] = {}
+    vi = 0
+    for sp in specs:
+        if sp["kind"] == "text":
+            continue
+        if sp["width_star"]:
+            vals[vi] = ("i", get_int(vi))
+            vi += 1
+        if sp["prec_star"]:
+            vals[vi] = ("i", get_int(vi))
+            vi += 1
+        conv = sp["conv"]
+        if conv in "feEgG":
+            vals[vi] = ("f", get_f(vi))
+        elif sp["lenmod"] in ("ll", "j", "L"):
+            vals[vi] = ("q", get_q(vi))
         else:
-            out.append("%" + spec + conv)
+            vals[vi] = ("i", get_int(vi))
+        vi += 1
+    return vals
+
+
+def _fmt(fmt: str, args: list[int], mem, floats: dict | None = None,
+         longs: dict | None = None) -> str:
+    """迷你 printf：MRP 常用的格式都支持。
+
+    ``args`` 是整数变参列表，``floats``/``longs`` 按同一个下标补充浮点与
+    64 位参数（旧调用方只传 ``args`` 时保持兼容）。
+    """
+    specs = _parse_fmt(fmt)
+
+    def _gi(vi: int) -> int:
+        return args[vi] if vi < len(args) else 0
+
+    def _gq(vi: int) -> int:
+        if longs and vi in longs:
+            return longs[vi]
+        return _gi(vi)
+
+    def _gf(vi: int) -> float:
+        return (floats or {}).get(vi, 0.0)
+
+    vals = _collect(specs, _gi, _gq, _gf)
+    return _render(specs, vals, mem)
+
+
+def _render(specs: list[dict], vals: dict[int, tuple[str, object]], mem) -> str:
+    out: list[str] = []
+    vi = 0
+    for sp in specs:
+        if sp["kind"] == "text":
+            out.append(sp["lit"])
+            continue
+        conv = sp["conv"]
+        flags = sp["flags"]
+        width = sp["width"]
+        prec = sp["prec"]
+        if sp["width_star"]:
+            width = int(vals[vi][1])
+            vi += 1
+        if sp["prec_star"]:
+            prec = int(vals[vi][1])
+            vi += 1
+        kind, val = vals.get(vi, ("i", 0))
+        vi += 1
+
+        if conv == "n":
+            continue
+        if conv == "s":
+            text = mem.cstr(int(val)) if int(val) else "(null)"
+            if prec is not None:
+                text = text[:prec]
+            out.append(_pad_str(text, width, flags))
+            continue
+        if conv == "c":
+            out.append(_pad_str(chr(int(val) & 0xFF), width, flags))
+            continue
+        if conv == "p":
+            out.append(_pad_str(f"0x{int(val) & 0xFFFFFFFF:08X}", width, flags))
+            continue
+        if conv in "feEgG":
+            f = float(val)
+            p = 6 if prec is None else prec
+            if conv == "f":
+                text = f"{f:.{p}f}"
+            elif conv in "eE":
+                text = f"{f:.{p}e}"
+                if conv == "E":
+                    text = text.upper()
+            else:
+                text = f"{f:.{p}g}"
+                if conv == "G":
+                    text = text.upper()
+            out.append(_pad_num(text, width, flags, True))
+            continue
+
+        # 整数类：先按无符号宽度解释，再看符号位（Python 的负数 & 0x80000000
+        # 不等于 C 的行为，必须先截断再判断）
+        iv = int(val)
+        if kind == "q":
+            u = iv & 0xFFFFFFFFFFFFFFFF
+            s = u - 0x10000000000000000 if u & 0x8000000000000000 else u
+        else:
+            if sp["lenmod"] in ("hh", "h"):
+                u = iv & 0xFFFF
+                s = u - 0x10000 if u & 0x8000 else u
+            else:
+                u = iv & 0xFFFFFFFF
+                s = u - 0x100000000 if u & 0x80000000 else u
+        if conv in "di":
+            if flags:
+                if s >= 0 and "+" in flags:
+                    s = f"+{s}"
+                elif s >= 0 and " " in flags:
+                    s = f" {s}"
+            text = str(s)
+            out.append(_pad_num(text, width, flags, False))
+        elif conv == "u":
+            text = str(u)
+            out.append(_pad_num(text, width, flags, False))
+        elif conv == "o":
+            text = format(u, "o")
+            if "#" in flags:
+                text = "0" + text
+            out.append(_pad_num(text, width, flags, False))
+        elif conv in "xX":
+            text = format(u, "x" if conv == "x" else "X")
+            if "#" in flags:
+                text = ("0x" if conv == "x" else "0X") + text
+            out.append(_pad_num(text, width, flags, False))
+        else:
+            out.append("%" + flags + conv)
     return "".join(out)
 
 
-def _pad(spec: str, text: str) -> str:
-    if not spec:
+def _pad_str(text: str, width: int | None, flags: str) -> str:
+    if not width or len(text) >= width:
         return text
-    zero = spec.startswith("0")
-    width = "".join(ch for ch in spec if ch.isdigit())
-    w = int(width) if width else 0
-    if len(text) >= w:
+    return text.ljust(width, " ") if "-" in flags else text.rjust(width, " ")
+
+
+def _pad_num(text: str, width: int | None, flags: str, is_float: bool) -> str:
+    """数值填充：``0`` 标志零填充（浮点要保留符号位），``-`` 左对齐。"""
+    if not width or len(text) >= width:
         return text
-    fill = "0" if zero else " "
-    return text.rjust(w, fill)
+    if "-" in flags:
+        return text.ljust(width, " ")
+    if "0" in flags and not is_float:
+        sign = ""
+        body = text
+        if body[:1] in "+- ":
+            sign, body = body[0], body[1:]
+        return sign + body.rjust(width - len(sign), "0")
+    return text.rjust(width, " ")
 
 
 # ==================================================================== 内存
@@ -266,15 +435,33 @@ def strstr(ctx, vm):
     ctx.ret(hay_p + idx if idx >= 0 else 0)
 
 
-@api("sprintf")
+@api("sprintf", "mr_sprintf")
 def sprintf(ctx, vm):
+    """``sprintf(buf, fmt, ...)`` / ``mr_sprintf`` —— MRP 的字符串格式化。
+
+    返回值按 C 标准给**写入的字节数**（不含结尾 null）。以前返回的是
+    Python 字符数，遇到中文文件名就会短一截 —— 应用拿返回值定位下一列
+    （比如文件名右边再画一列）时就会错位。
+
+    格式支持：``%d %i %u %o %x %X %f %e %g %c %s %p %%``、长度修饰符
+    ``hh h l ll L j z t``、``- + 空格 # 0`` 标志、宽度/精度与 ``*``。
+    """
     dst = ctx.arg(0)
     fmt = ctx.mem.cstr(ctx.arg(1))
-    nargs = max(0, fmt.count("%") - fmt.count("%%") * 2)
-    args = [ctx.arg(2 + i) for i in range(max(nargs, 0))]
-    text = _fmt(fmt, args, ctx.mem)
-    ctx.mem.put_cstr(dst, text)
-    ctx.ret(len(text))
+    specs = _parse_fmt(fmt)
+    vals = _collect(
+        specs,
+        get_int=lambda vi: ctx.arg(2 + vi),
+        get_q=lambda vi: ctx.qarg(2 + vi),
+        get_f=lambda vi: ctx.farg(2 + vi),
+    )
+    text = _render(specs, vals, ctx.mem)
+    try:
+        raw = text.encode("gbk")
+    except UnicodeEncodeError:
+        raw = text.encode("utf-8")
+    ctx.mem.write(dst, raw + b"\x00")
+    ctx.ret(len(raw))
 
 
 @api("atoi")
