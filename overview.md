@@ -488,3 +488,86 @@ mr 层多一个 `mr_sprintf` → 整表差一格。我第一次就是拿 **mr �
 **验证**：`fmt_probe` **49/49**、`table_probe` **14/14**；全套 **17 个探针 rc=0**；
 `mrp_emu.pyz` 重打包 **109.0 KB**，从单文件版跑三国志 200 帧零异常。
 知识库 `docs/19` 已按新结论重写。
+
+---
+
+## 古董 QQ 复活（腾讯 3G QQ 服务端全部停运）
+
+### 结论：没有替代，只能自建
+
+实测（2026-11-11）：`info.3g.qq.com` 302 到 https 后失效、`3g.qq.com` 502、
+`conf.3g.qq.com/newConf/n` 502、`activeqq.3g.qq.com` 502；
+斯凯复刻机 `159.75.119.124` 只代理自己那几个域名，QQ 相关一律 502。
+**任何第三方替代都不存在。**
+
+### 逆向成果
+
+**协议（斯凯 QQ 代理，HTTP GET 明文参数）** —— 从 `QQDSM2007.mrp` 的
+`protocol.mr` / `network.mr`（都是 gzip，解压后是字符串表）读出来：
+
+```
+VER=1.3&CON=1&CMD=LOGIN&SEQ=<n>&UIN=<qq>&PS=<pwd>&M5=1&LG=&LT=&LC=
+```
+
+命令集：`LOGIN / LOGOUT / HELLO / QUERY_STAT / LIST / CLTMSG / GETINFO /
+FINGER / ADDTOLIST / ACK_ADDTOLIST / DELFROMLIST / VERIFY_CODE`；
+响应头 `x-sp-result:` + `content-length:`，响应体 `RES=...`。
+
+**服务器发现链**（2010 版 `cfunction.ext` @0x4C328 附近）：
+`http://conf.3g.qq.com/newConf/n` → 响应 `result=0&<服务器列表>` →
+落盘 `QServer.cof` → `g_key2sid.jsp` 换 SID → 走上面那套协议。
+
+**私有文件格式**：
+
+| 文件 | 格式 |
+|---|---|
+| `QServer.cof` | **二进制**：`u8 版本` + 每条 `u32 服务器编号`（0 结束） |
+| `qqdsm/settings` | **文本** `key=value`（`www.sky-mobi.com` / `port` / `_ip` / `_port`） |
+| `profile.db` | `PROF` magic + 0x80 数据块（完整格式未逆出） |
+| `system/gb16.uc2` | 16×16 **1bpp，高位在前**，偏移 = `id * 32`，**无偏移表** |
+
+### 模拟器侧三处修复
+
+1. **`mr_platEx(1207)` = `MR_UCS2GB`**（大端 UCS-2 → GBK）没实现，
+   只回 SUCCESS 不写输出 → 应用拿到空路径去开
+   `mythroad/file:/E:/QQ2010/...`。已按官方 `dsm.c` 语义补齐
+   （`output` 是 `uint8**` 指向调用者缓冲区；`output_len` 是**容量**）。
+2. **fs 盘符/URI 映射**：`E:/`、`file:/`、`mythroad/file:/` 三种写法
+   现在统一落到 `mythroad/` 下。
+3. **MRP 包内资源释放**（真机行为）：新增 `release.py`，
+   `detect_app_dirs()` 从包内资源里的 `E:/xxx/` 反推应用目录
+   （atxqq → `["QQ2010","QQ2010Download","QQBrowser"]`，
+   dsm_gm → `["downdata"]`），`release_mrp_resources()` 释放 23 个资源。
+
+### 本地替代实现
+
+| 模块 | 作用 |
+|---|---|
+| `retrowap.py` | 本地 WAP 服务器（`/g/s?aid=index` 门户首页、`/mtt/qq` 登录页…）+ 12 个腾讯域名的覆写表 |
+| `retroquq.py` | `QServer.cof` 生成/解析、`result=0&` 响应、协议常量 |
+| `qqenv.py` | 运行环境文件生成（服务器列表 / 账号库 / 设置 / 字库） |
+| `fontgen.py` | **本地造 16 点阵字库**：64px 粗体渲染 → 不透明画布 → numpy 批量取阈值 → Unicode 索引 |
+
+字库踩坑记录：16px 直接渲染 → 细笔画被吃掉（「网」消失、「输」变方块）；
+SRCALPHA 画布 → alpha 被平均只剩 111；二次裁剪放大 → 字形撑成实心方块。
+最终方案：64px 粗体 + 不透明黑底 + numpy 阈值 + 不做二次缩放，
+4 秒生成 1.3 MB，之后走缓存。
+
+### 效果
+
+2010 版 QQ 的 **WAP 门户首页完整渲染**：企鹅 logo、「输入网址」「搜索」
+输入框、腾讯/空间/邮箱/天闻/音乐/游戏/图书七个图标、手机网站/分类网站/
+历史记录三个折叠菜单、底部「菜单」软键 —— 中文笔画饱满清晰。
+2007 版 QQ 的**登录界面**也正常渲染（企鹅 + 账号/密码框 + 软键）。
+
+### 验证
+
+新增 `tests/qq_probe.py` **46 项**（协议格式 / 私有文件格式 / 字模位序 /
+1207 与路径映射 / 资源释放 / 本地服务端 / 真实 QQ 端到端）；
+全套 **18 个探针 rc=0**。知识库 `docs/20-古董QQ复活.md`。
+
+### 边界
+
+QQ 聊天协议格式已完全逆出，但**服务端尚未实现**；`profile.db` 只写了
+magic 头（走「首次运行」分支）；老协议的流量计费（`%w %d.%02dk`）
+依赖已消失的运营商接口，本地服务端应直接绕过。

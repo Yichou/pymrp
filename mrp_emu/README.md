@@ -253,6 +253,7 @@ python tests/exit_probe.py        # 退出 23 项（mr_exit 收尾：停声音/�
 python tests/crash_probe.py       # 崩溃 15 项（MRP 野指针隔离：崩溃不带走模拟器）
 python tests/fmt_probe.py        # 格式化 49 项（sprintf 格式覆盖/浮点/AAPCS 变参/返回值字节数/ARM 机器码端到端）
 python tests/table_probe.py      # 槽位表 14 项（与 mythroad 官方表逐项对齐 + mr_stop_ex）
+python tests/qq_probe.py        # 古董 QQ 46 项（斯凯协议/私有文件格式/1207/资源释放/端到端）
 python tests/legacy_net_probe.py  # DNS 覆写 / WAP 代理 51 项（纯回环）
 python tests/legacy_net_probe.py --online   # 55 项，含复刻服务器只读探针
 python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调用与离屏缓冲导出
@@ -270,6 +271,18 @@ python tests/rx_gfx_trace.py      # 诊断工具：RX 90 步按键的绘图调�
 > `out/rx_trace_*_calls.txt`（全部桥接调用与 `drawBitmap` 参数）、
 > `*_dsmbuf.png`（DSM 离屏全屏缓冲）与逐帧截图。
 > 加 `PYMRP_FROM_PYZ=1` 可从 `mrp_emu.pyz` 加载代码复测打包产物。
+
+**古董 QQ 复活**（腾讯 3G QQ 服务端已全部停运）：
+
+```bash
+python run.py "runtime/mythroad/391032_240320_atxqq.mrp" \
+    --workdir runtime --retro-wap on
+```
+
+`--retro-wap on` 会起一个本地 WAP 服务器、把 12 个腾讯 3G 域名指向它，
+并自动备好古董 QQ 需要的服务器列表 / 账号库 / 16 点阵字库。
+首次会生成字库（约 4 秒，之后走缓存）。详见
+`docs/20-古董QQ复活.md`。
 
 `selftest.py` 用硬编码 ARM 机器码直接调用桥接槽位，验证：ARM 执行、内存
 共享、参数/返回值传递、文件系统、图形输出、UI 命中测试。

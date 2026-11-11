@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,74 @@ def _gbk(raw: bytes) -> str:
 
 def _u32(d: bytes, off: int) -> int:
     return struct.unpack_from("<I", d, off)[0] if len(d) >= off + 4 else 0
+
+
+@dataclass
+class MrpEntry:
+    """MRP 包内的一个条目。"""
+
+    name: str
+    offset: int
+    size: int                  # 压缩后大小
+    rsv: int = 0
+
+    @property
+    def is_gzip(self) -> bool:
+        return self.size >= 2
+
+
+def read_mrp_entries(path: str | Path) -> list[MrpEntry]:
+    """读出一个 MRP 的完整条目表。
+
+    固定头 0xF0 之后是条目表，每项::
+
+        u32 nameLen | name[nameLen] | u32 offset | u32 csize | u32 rsv
+
+    最后一个条目是**包尾标记**（csize 固定为一个越界的大数），不是真实
+    条目 —— 这里会把它剔除，避免释放时写出垃圾文件。
+    """
+    try:
+        with open(path, "rb") as fh:
+            d = fh.read()
+    except OSError:
+        return []
+    if len(d) < HDR_SIZE or d[:4] != b"MRPG":
+        return []
+    size = len(d)
+    out: list[MrpEntry] = []
+    pos = HDR_SIZE
+    while pos + 16 <= size:
+        nl = _u32(d, pos)
+        if not (2 <= nl <= 128):
+            break
+        if pos + 4 + nl + 12 > size:
+            break
+        raw = d[pos + 4:pos + 4 + nl]
+        name = (raw[:-1] if raw[-1:] == b"\x00" else raw)
+        name = name.decode("gbk", "replace")
+        off, csz, rsv = struct.unpack_from("<III", d, pos + 4 + nl)
+        pos += 4 + nl + 12
+        # 包尾标记：偏移+大小越界
+        if off + csz > size:
+            continue
+        out.append(MrpEntry(name, off, csz, rsv))
+    return out
+
+
+def read_mrp_entry_data(path: str | Path, entry: MrpEntry) -> bytes:
+    """取出一个条目的内容；gzip 的自动解压。"""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(entry.offset)
+            blob = fh.read(entry.size)
+    except OSError:
+        return b""
+    if blob[:2] == b"\x1f\x8b":
+        try:
+            return zlib.decompressobj(47).decompress(blob)
+        except zlib.error:
+            return blob
+    return blob
 
 
 def read_mrp_header(src: str | Path | bytes) -> dict:

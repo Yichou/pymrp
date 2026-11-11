@@ -11,8 +11,13 @@ mrp_emu/
 ├── bridge.py            函数表 + UC_HOOK_CODE 拦截（syscall 机制核心）
 ├── vm.py                Unicorn 封装：run_code / 事件 / timer / r9 防御
 │                        + 低地址 ROM 映射（0x0–CODE_ADDRESS）
-├── fs.py                虚拟文件系统（路径沙箱 + 相对路径容错）
-├── catalog.py           MRP 头解析 + 在线/本地索引 + safe_run_name 短名接管
+├── fs.py                虚拟文件系统（路径沙箱 + 相对路径容错 + 盘符/URI 映射）
+├── catalog.py           MRP 头/条目表解析 + 在线/本地索引 + safe_run_name 短名接管
+├── release.py           MRP 包内资源释放 + 应用目录反推（detect_app_dirs）
+├── retrowap.py          本地复古 WAP 服务器（替代停运的腾讯 3G QQ / 斯凯网关）
+├── retroquq.py          QServer.cof 生成/解析 + 斯凯 QQ 代理协议常量
+├── qqenv.py             古董 QQ 运行环境文件生成（服务器列表/账号库/字库）
+├── fontgen.py           MTK 16 点阵字库生成器（Unicode 索引，1bpp MSB-first）
 ├── gfx.py               RGB565 帧缓冲 + 紧凑位图 blit + DSM 脏矩形同步 + 字体缓存
 ├── app.py               App 门面（fs/gfx/audio 组装）+ shutdown_session 统一收尾
 ├── cli.py               主循环、键鼠输入、截图、统计、最小 SDL 初始化、启动打点
@@ -96,6 +101,7 @@ pack_filename / start_filename                       当前包名与入口
 | `rx_env.py`（helper） | — | 为 RX 回归构造固定隔离快照，排除应用自建缓存目录 |
 | `fmt_probe.py` | 49 | sprintf 格式覆盖 / 宽度精度 / 浮点 / 长度修饰符 / **返回值字节数** / **ARM 机器码端到端（AAPCS 变参布局）** |
 | `table_probe.py` | 14 | 我们的 mr_table 与 mythroad 官方表逐项对齐（0x000–0x07C）、mr_stop_ex、与 mr 层那张表的差异 |
+| `qq_probe.py` | 46 | 古董 QQ：斯凯协议格式串与命令集、私有文件格式、1207 与盘符路径、包内资源释放、本地复古 WAP 服务端、真实 QQ 端到端渲染 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。
 启动耗时诊断用 `PYMRP_TIMING=1 python run.py --frames 3`，

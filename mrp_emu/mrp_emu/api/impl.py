@@ -54,6 +54,16 @@ def _s(ctx, i: int) -> str:
 _MAX_BLOB = 8 << 20          # 8MB，正好是整块模拟内存的上限
 
 
+def _plat_log(vm, msg: str) -> None:
+    """platEx 的日志出口；没有 App 时（单测直接用 Vm）静默丢弃。"""
+    app = getattr(vm, "app", None)
+    if app is not None:
+        try:
+            app.log(msg)
+        except Exception:  # pragma: no cover - 日志不该影响主流程
+            pass
+
+
 def _read_blob(vm, addr: int, length: int) -> bytes:
     """从模拟内存里安全地取一段数据。
 
@@ -804,8 +814,76 @@ def mr_platEx(ctx, vm):
                                  output_ptr, output_len_ptr))
         return
 
+    if code == 1207:                    # MR_UCS2GB / UCS2 -> GBK
+        ctx.ret(_ucs2_to_gb(ctx, vm, input_addr, input_len,
+                            output_ptr, output_len_ptr))
+        return
+
     vm.app.log(f"[mr_platEx] code=0x{code:X}")
     ctx.ret(MR_SUCCESS)
+
+
+def _ucs2_to_gb(ctx, vm, iaddr: int, ilen: int,
+                optr: int, olenptr: int) -> int:
+    """复刻 mrpoid/dsm.c 的 ``MR_UCS2GB``(1207)：大端 UCS-2 -> GBK。
+
+    语义（官方 dsm.c:1788-1822）：
+
+    * ``input`` 是**大端** UCS-2 字符串（每字符 2 字节，高位在前）；
+    * ``output`` 是 ``uint8**``，指向**调用者提供**的输出缓冲区首地址；
+      转换结果（GBK，以 ``\\0`` 结尾）写进该缓冲区，**不重新分配内存**；
+    * ``output_len`` 是 ``int32*``，官方注释写的是「output 缓冲区的长度，
+      单位字节数」——即**容量**，不是转换后的长度。
+
+    之前我们没实现这个 code，只回了个 MR_SUCCESS 而不写输出，应用拿到的
+    缓冲区还是空的，于是去开 ``mythroad/file:/E:/QQ2010/...`` 这种鬼路径。
+    官方用 ``tab_ucs2gb`` 查表，我们直接用 Python 的 ``gbk`` 编码等价。
+    """
+    mem = vm.mem
+    if not iaddr or ilen <= 0:
+        _plat_log(vm, "[platEx 1207] 输入为空")
+        return MR_FAILED
+    if not optr or not mem.valid(optr, 4):
+        _plat_log(vm, "[platEx 1207] output 指针无效")
+        return MR_FAILED
+
+    raw = _read_blob(vm, iaddr, min(int(ilen), 4096))
+    # 大端 UCS-2 -> 每 2 字节一个码位；官方 UCS2_strlen 数的是「字节数」
+    text = raw.decode("utf-16-be", "replace").split("\x00", 1)[0]
+    try:
+        gb = text.encode("gbk")
+    except UnicodeEncodeError:
+        # GBK 编不了的字符（生僻字/emoji）官方会写 0xFFFF，
+        # 这里退化成 '?' 更安全，至少不会让整串崩掉。
+        gb = text.encode("gbk", "replace")
+
+    dst = mem.read_u32(optr)
+    if not dst:
+        _plat_log(vm, "[platEx 1207] 输出缓冲区为空")
+        return MR_FAILED
+    # 容量：官方读 output_len 指的是「缓冲区长度（字节）」，是容量不是结果长度
+    cap = 0
+    if olenptr and mem.valid(olenptr, 4):
+        cap = mem.read_u32(olenptr)
+    if cap <= 0:
+        cap = len(gb) + 1
+    # 留一个字节给结尾的 \0
+    room = max(0, cap - 1)
+    if room == 0:
+        _plat_log(vm, "[platEx 1207] 输出缓冲区太小")
+        return MR_FAILED
+    data = gb[:room]
+    # GBK 字符不能被截断在半个字上，回退到完整字符边界
+    while data:
+        try:
+            data.decode("gbk")
+            break
+        except UnicodeDecodeError:
+            data = data[:-1]
+    mem.write(dst, data + b"\x00")
+    _plat_log(vm, f"[platEx 1207] {text!r} -> "
+                  f"{data.decode('gbk', 'replace')!r} ({len(data)} 字节)")
+    return MR_SUCCESS
 
 
 def _dsm_switch_path(ctx, vm, iaddr: int, ilen: int,

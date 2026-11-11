@@ -8,6 +8,7 @@ vmrp 的做法是直接 open() 宿主文件（mrp 已经被工具解开到 mythr
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -27,6 +28,10 @@ from .consts import (
 )
 
 DRIVE_PREFIXES = ("a:", "A:", "c:", "C:", "e:", "E:", "fs:/", "/")
+# WAP 浏览器（WML 里的 <img src="file:/E:/...">）会带 URI 方案前缀。
+# 这些路径在真机上指的是手机内部盘，这里统一剥掉方案与盘符，落到 root 下。
+URI_PREFIXES = ("file:/", "file://", "http:/", "https:/", "wml:/", "res:/",
+                "local:/", "app:/")
 
 
 class VirtualFs:
@@ -43,10 +48,41 @@ class VirtualFs:
 
     # ------------------------------------------------------------ 路径
     def resolve(self, name: str, must_exist: bool = False) -> Path | None:
+        """把 MRP 里的路径解析成 root 下的真实路径。
+
+        真机上的路径形态有好几种，都要落到同一处：
+
+        ============================  ==========================
+        MRP 里的写法                  真机含义
+        ============================  ==========================
+        ``mythroad/QQ2010/x.wml``     应用数据目录
+        ``E:/QQ2010/res/x.gif``      E 盘（= 应用数据根）
+        ``file:/E:/QQ2010/x.gif``    WML 里的 ``<img src>``
+        ``mythroad/file:/E:/...``    ext 拼路径时把两者凑一起了
+        ============================  ==========================
+
+        ``E:`` 盘映射到 ``mythroad/``（MTK 真机上前者就是后者的别名）。
+        """
         n = name.replace("\\", "/").strip()
-        for p in DRIVE_PREFIXES:
+        # ext 侧有时把 URI 拼在相对路径中段（如 "mythroad/file:/E:/QQ2010/x"），
+        # 方案前缀不在开头，要先按段剥掉。
+        if "file:/" in n.lower() or "file://" in n.lower():
+            parts = re.split(r"file:/+", n, maxsplit=1, flags=re.I)
+            head, tail = parts[0], parts[1] if len(parts) > 1 else ""
+            # head 里若以 "mythroad" 结尾，说明已经带了工作目录前缀，丢掉它
+            segs = [s for s in head.split("/") if s]
+            if segs and segs[-1].lower() == "mythroad":
+                segs = segs[:-1]
+            n = "/".join(segs + [tail]) if segs else tail
+        # 剥 URI 方案（file:/E:/xxx -> E:/xxx）
+        for p in URI_PREFIXES:
             if n.lower().startswith(p.lower()):
                 n = n[len(p):]
+                break
+        # 盘符：E:/C:/A: 一律映射到 mythroad/（应用数据根）
+        for p in ("e:", "c:", "a:", "b:", "d:"):
+            if n.lower().startswith(p):
+                n = "mythroad/" + n[len(p):].lstrip("/")
                 break
         n = n.lstrip("/")
         # "."/".." 归一化后**钳制在 root 内**：真机上根目录的 ".." 仍是根目录。

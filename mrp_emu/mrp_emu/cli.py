@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "传空字符串可清空；也可写 10.0.0.172->IP:PORT 覆盖 WAP 网关")
     p.add_argument("--wap-proxy", choices=("on", "off"), default="on",
                    help="内置 WAP 代理（接管 10.0.0.172，支持绝对 URL / Host / CONNECT），默认 on")
+    p.add_argument("--retro-wap", choices=("on", "off"), default="off",
+                   help="启动本地复古 WAP 服务端（替代已停运的腾讯 3G QQ / "
+                        "斯凯网关），并把 info.3g.qq.com 等域名指向它")
+    p.add_argument("--retro-wap-port", type=int, default=0,
+                   help="本地复古 WAP 服务端端口，0=自动挑空闲端口")
     p.add_argument("--strict-null", action="store_true",
                    help="不映射 0 页，用于抓 NULL 指针解引用（调试用，默认映射以兼容真机行为）")
     return p
@@ -278,12 +283,32 @@ def main(argv: list[str] | None = None) -> int:
         log=log, pcm_rate=args.pcm_rate,
     )
 
+    # ---------------- 本地复古 WAP 服务端（替代停运的腾讯 3G QQ / 斯凯网关）
+    retro_srv = None
+    dns_map_text = args.dns_map
+    if args.retro_wap == "on":
+        from .retrowap import WapServer, dns_map_for
+        retro_srv = WapServer("127.0.0.1", args.retro_wap_port,
+                               log=log)
+        retro_srv.start_background()
+        rhost, rport = retro_srv.server_address[0], retro_srv.server_address[1]
+        log(f"[retro-wap] 本地复古 WAP 服务端: http://{rhost}:{rport}/")
+        dns_map_text = dns_map_for(rhost, rport, args.dns_map)
+        log(f"[retro-wap] 域名覆写: {len(dns_map_text.split(';'))} 条")
+        # 古董 QQ 还需要一堆真机预置的私有配置（服务器列表 / 账号库 / 字库），
+        # 一并生成，让它们能直接连上本地服务端。
+        try:
+            from .qqenv import prepare_qq_environment
+            prepare_qq_environment(workdir, rhost, rport, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[qq-env] 准备运行环境失败: {exc}")
+
     def new_session():
         v = Vm(log=log, zero_page=not args.strict_null)
         a = App(v, workdir, log=log, audio=(args.audio != "off"),
                 sample_rate=args.audio_rate, pcm_rate=args.pcm_rate,
                 audio_engine=shared_audio, http_proxy=args.net_proxy,
-                net_enabled=not args.net_off, dns_map=args.dns_map,
+                net_enabled=not args.net_off, dns_map=dns_map_text,
                 wap_proxy=(args.wap_proxy != "off"))
         v.app = a
         v.install_tables(MR_TABLE, DSM_FUNCS)
@@ -385,6 +410,17 @@ def main(argv: list[str] | None = None) -> int:
             return False
 
         ext = args.ext or probe_entry_ext(target)
+        # 真机行为：应用把图标/WML 等资源从包里释放到自己的目录，
+        # 不释放的话应用打开资源全部失败（页面空白）。见 docs/20。
+        try:
+            from .release import detect_app_dirs, release_mrp_resources
+            dirs = detect_app_dirs(target)
+            app_dir = dirs[0] if dirs else ""
+            if app_dir:
+                release_mrp_resources(target, workdir, app_dir=app_dir,
+                                      log=log)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[release] 释放包内资源失败: {exc}")
         app.net.close_network()      # 换应用前关掉上一个应用的连接
         v, a = new_session()
         a.mrp_name = display or target.name
@@ -692,6 +728,9 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"{t.name} 热点: " + ", ".join(f"{k}×{v}" for k, v in top))
 
     shared_audio.shutdown()
+    if retro_srv is not None:
+        retro_srv.stop()
+        log("[retro-wap] 本地复古 WAP 服务端已停止")
     pygame.quit()
     return 0
 

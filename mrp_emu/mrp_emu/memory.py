@@ -141,6 +141,13 @@ class MrpMemory:
         off = self.offset(addr)
         self.buf[off:off + 4] = (v & 0xFFFFFFFF).to_bytes(4, "little")
 
+    def read_u32(self, addr: int) -> int:
+        """读 4 字节小端无符号整数（越界返回 0，不抛异常）。"""
+        if not self.valid(addr, 4):
+            return 0
+        off = self.offset(addr)
+        return int.from_bytes(self.buf[off:off + 4], "little")
+
     # -- 字符串：MRP 是 GBK 时代的东西 ------------------------------
     def cstr(self, addr: int, limit: int = 4096) -> str:
         if not self.valid(addr, 1):
