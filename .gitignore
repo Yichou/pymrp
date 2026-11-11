@@ -23,3 +23,12 @@ Thumbs.db
 
 # 根目录临时产物（截图/对比图等）
 out/
+
+# 自编译 mythroad 虚拟机构建产物（源码在 tools/mythroad/ 入库）
+tools/mythroad/obj/
+tools/mythroad/mythroad_vm.elf
+tools/mythroad/mythroad.map
+tools/mythroad/selfimpl.txt
+tools/mythroad/emu_stub.s
+tools/mythroad/emu_slots.c
+tools/armtoolchain/
