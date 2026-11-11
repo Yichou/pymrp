@@ -16,11 +16,15 @@ from ..consts import (
     DEVICE_MODEL,
     DEVICE_VENDOR,
     IMEI,
+    IMSI,
+    MANUFACTORY,
+    MODEL_TYPE,
     MR_FAILED,
     MR_FILE_CREATE,
     MR_FILE_RDONLY,
     MR_FILE_RDWR,
     MR_FILE_WRONLY,
+    MR_IGNORE,
     MR_KEY_PRESS,
     MR_KEY_RELEASE,
     MR_NO_EXIST,
@@ -29,6 +33,7 @@ from ..consts import (
     SCREEN_BPP,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    SW_VERSION,
 )
 
 IMPL: dict[str, callable] = {}
@@ -746,10 +751,33 @@ def mr_getScreenInfo(ctx, vm):
 
 @api("mr_getUserInfo")
 def mr_getUserInfo(ctx, vm):
+    """填充 ``mr_userinfo`` 结构。
+
+    结构布局（mrporting.h / dl_mrporting.h，两个来源一致）::
+
+        uint8 IMEI[16];        // +0   IMEI，15 字符 + '\\0'
+        uint8 IMSI[16];        // +16  IMSI，15 字符 + '\\0'
+        char  manufactory[8];  // +32  厂商名，最多 7 字符
+        char  type[8];         // +40  机型，最多 7 字符
+        uint32 ver;            // +48  软件版本
+        uint8 spare[12];       // +52
+
+    .. important::
+       字段偏移必须严格对齐。之前把 IMEI 写在 +16、厂商名写在 +0，
+       **整体错位**，而且 ``type``/``ver`` 根本没填 —— 应用读到的是
+       **未初始化内存**。官方 mythroad.c:5375 拿到 info 后直接
+       ``setstrfield(L, "hstype", info.type)`` 把它当 C 字符串用，
+       遇到未初始化内存就会解引用野指针（见 docs/22）。
+    """
     p = ctx.arg(0)
     if p:
-        ctx.mem.put_cstr(p + 0, "460000000000000")
-        ctx.mem.put_cstr(p + 16, IMEI)
+        # 先整块清零：spare[12] 和任何未填字段都不能留随机内容
+        ctx.mem.write(p, b"\x00" * 64)
+        ctx.mem.put_cstr(p + 0, IMEI)            # IMEI[16]
+        ctx.mem.put_cstr(p + 16, IMSI)           # IMSI[16]
+        ctx.mem.put_cstr(p + 32, MANUFACTORY)    # manufactory[8]
+        ctx.mem.put_cstr(p + 40, MODEL_TYPE)     # type[8]
+        ctx.mem.set_u32(p + 48, SW_VERSION)      # ver
     ctx.ret(MR_SUCCESS)
 
 
@@ -759,6 +787,13 @@ def mr_plat(ctx, vm):
 
     音频相关的两个 code（SKYENGINE 手册 mr_plat(102)/(103)）：最底层的
     PCM 环形缓冲直写模式 —— 应用自己往内存里写 PCM，驱动只管播。
+
+    .. important::
+       **未实现的 code 必须返回 MR_IGNORE(1)，不能返回 MR_SUCCESS(0)**。
+       手册对绝大多数 code 都写明「未实现返回 MR_IGNORE」。返回 0 等于
+       告诉应用「成功且结果为 0」，应用会把这个 0 当成真实数据继续用
+       （比如把「短信 0 条」当真、把返回值当指针解引用），后果是
+       野指针崩溃（见 docs/22）。
     """
     code = ctx.arg(0)
     param = ctx.arg(1)
@@ -778,10 +813,45 @@ def mr_plat(ctx, vm):
             ctx.ret(MR_SUCCESS)
             return
 
+    # --- 短信族（1100-1106）：状态查询类，返回 MR_PLAT_VALUE_BASE + n
+    if code in (1100, 1101, 1106):
+        # 1100 短信模块状态：0=初始化中 1=就绪
+        # 1101 短信条数：无短信模块 -> 0 条
+        # 1106 获取短信中心：模拟器不发真实短信请求
+        base = 0x1000
+        if code == 1100:
+            ctx.ret(base + 1)               # 短信模块「就绪」
+        elif code == 1101:
+            ctx.ret(base + 0)               # 收件箱 0 条
+        else:
+            ctx.ret(base + 0)
+        return
+
+    if code == 1205:      # 是否触摸屏
+        ctx.ret(0x1000 + 1)                 # 触摸屏
+        return
+    if code == 1206:      # 是否中文
+        ctx.ret(0x1000 + 1)
+        return
+    if code == 1211:      # 生成随机数：范围在 param
+        try:
+            import random
+            ctx.ret(0x1000 + random.randint(0, max(1, param)))
+        except Exception:
+            ctx.ret(MR_FAILED)
+        return
+    if code == 1214:      # 设置挂机键是否回 IDLE
+        ctx.ret(MR_SUCCESS)
+        return
+    if code == 1011:      # 设置收到新短信时是否显示提示界面
+        ctx.ret(MR_SUCCESS)
+        return
+
     if code == 0x1000:      # MR_PLAT_VALUE
         ctx.ret(0x1000)
     else:
-        ctx.ret(MR_SUCCESS)
+        # 未实现：明确告诉应用「不支持」，别让它把 0 当有效结果
+        ctx.ret(MR_IGNORE)
 
 
 @api("mr_platEx")
@@ -791,6 +861,16 @@ def mr_platEx(ctx, vm):
 
     音频族 201x-216x / 222x-225x 走 audio.media（流媒体播放器），
     其余 code 交给原来的兜底逻辑。
+
+    .. important::
+       **未实现的 code 也必须把 output 清零。** 手册的契约是
+       「成功 MR_SUCCESS / 失败 MR_FAILED / 未实现 MR_IGNORE」，应用
+       拿到 MR_IGNORE 后一般不再碰 output；但仍有应用先读 output 再
+       判断返回值。output 指针指向调用方的缓冲区，里面是**未初始化
+       的栈内存**，应用把它当字符串/指针用就会解引用野指针 ——
+       实测古董支付插件就是这样崩的（见 docs/22）。
+
+       所以这里无条件把 ``*output`` 置 NULL、``*output_len`` 置 0。
     """
     code = ctx.arg(0)
     input_addr = ctx.arg(1)
@@ -819,8 +899,30 @@ def mr_platEx(ctx, vm):
                             output_ptr, output_len_ptr))
         return
 
-    vm.app.log(f"[mr_platEx] code=0x{code:X}")
-    ctx.ret(MR_SUCCESS)
+    # --- 兜底：把 output 清零，绝不让应用读到未初始化内存
+    _clear_plat_output(vm, output_ptr, output_len_ptr)
+    vm.app.log(f"[mr_platEx] code=0x{code:X} 未实现")
+    ctx.ret(MR_IGNORE)
+
+
+def _clear_plat_output(vm, output_ptr: int, output_len_ptr: int) -> None:
+    """把 platEx 的输出缓冲区清零。
+
+    ``output`` 是 ``uint8**``：调用方给了一个指针槽，我们要往槽里写
+    NULL（或一个我们自己分配的缓冲区），并把 ``*output_len`` 置 0。
+    写之前先校验指针有效性 —— 应用传的地址可能是野的。
+    """
+    mem = vm.mem
+    if output_ptr and mem.valid(output_ptr, 4):
+        try:
+            mem.set_u32(output_ptr, 0)
+        except Exception:  # pragma: no cover
+            pass
+    if output_len_ptr and mem.valid(output_len_ptr, 4):
+        try:
+            mem.set_u32(output_len_ptr, 0)
+        except Exception:  # pragma: no cover
+            pass
 
 
 def _ucs2_to_gb(ctx, vm, iaddr: int, ilen: int,

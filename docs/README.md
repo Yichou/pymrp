@@ -68,6 +68,7 @@
 | [19 sprintf、槽位表与 RX 列表里那个 "f"](19-sprintf与槽位表排查.md) | 那个字符的像素级取证、sprintf 残缺与返回值字节数、`mr_sprintf`、我们的 mr_table 与 mrpoid 官方从 0x048 起错位一格 |
 | [20 古董 QQ 复活](20-古董QQ复活.md) | 腾讯 3G QQ 全部停运的实测结论、斯凯 QQ 代理协议（`VER=1.3&CON=1&CMD=...`）逆向、`QServer.cof`/`settings`/`.uc2` 格式、1207 与盘符路径修复、包内资源释放、本地复古 WAP 服务端与自造点阵字库 |
 | [21 系统字库与字体清晰度](21-系统字库与字体清晰度.md) | 「中文糊成一坨」的根因（DSM 系统点阵字库，非宿主 UI 字体）、原厂 `fonts/gb16.uc2` 复用、缩放导致笔画粘连、pygame SRCALPHA 的 alpha 通道语义、启动时墨迹率体检与自动替换 |
+| [22 字库与宿主接口语义对齐](22-字库与宿主接口语义对齐.md) | 支付成功后野指针崩溃的根因：`mr_getUserInfo` 字段错位（`type`/`ver` 未填）、未实现的 `mr_plat` 误返回 `MR_SUCCESS`、`mr_platEx` 未写 output 缓冲区；与 docs/21 同源的宿主接口语义问题 |
 
 ### 第四篇：考据
 

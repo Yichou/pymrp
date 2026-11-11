@@ -222,3 +222,24 @@ MR_PLAT_SMS_UTF8 = 0
 DEVICE_MODEL = "MTK-QVGA"
 DEVICE_VENDOR = "MTK"
 IMEI = "860000000000000"
+# IMSI：46000 = 中国移动，末 10 位是用户号
+IMSI = "460000123456789"
+
+# mr_userinfo 结构里各字段的偏移（mrporting.h / dl_mrporting.h）
+#   uint8 IMEI[16]        +0
+#   uint8 IMSI[16]        +16
+#   char  manufactory[8]  +32
+#   char  type[8]         +40
+#   uint32 ver            +48
+#   uint8 spare[12]       +52
+USERINFO_IMEI_OFF = 0
+USERINFO_IMSI_OFF = 16
+USERINFO_MANUFACTORY_OFF = 32
+USERINFO_TYPE_OFF = 40
+USERINFO_VER_OFF = 48
+USERINFO_SIZE = 64
+
+# mr_getUserInfo 各字段的填充值
+MANUFACTORY = "MTK"            # 厂商名（<=7 字符）
+MODEL_TYPE = "MTK-QVGA"        # 机型（<=7 字符）
+SW_VERSION = 0x00010000        # 软件版本（u32）

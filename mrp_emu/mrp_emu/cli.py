@@ -142,6 +142,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="本地复古 WAP 服务端端口，0=自动挑空闲端口")
     p.add_argument("--strict-null", action="store_true",
                    help="不映射 0 页，用于抓 NULL 指针解引用（调试用，默认映射以兼容真机行为）")
+    p.add_argument("--keys", default="",
+                   help="按键脚本：用逗号分隔的按键序列自动操作应用，"
+                        "用于可复现的回归测试。可用键名："
+                        "0-9/*/#、UP/DOWN/LEFT/RIGHT、ENTER(SELECT)、"
+                        "SOFT_L/SOFT_R(左/右软键)、END、CLEAR；"
+                        "每步之间默认间隔 12 帧，可用 @N 指定间隔")
+    p.add_argument("--key-delay", type=int, default=12,
+                   help="--keys 每步之间的帧间隔，默认 12")
     return p
 
 
@@ -594,6 +602,38 @@ def main(argv: list[str] | None = None) -> int:
         paint_demo(app.gfx, app, last_key_text)
         return app.gfx.surface()
 
+    # ---------------- 按键脚本（可复现的回归驱动）
+    # 格式："5,5,ENTER,SOFT_L,@30,0" —— 每项一个键名，@N 表示等待 N 帧。
+    key_script: list[tuple[str | None, int]] = []
+    if args.keys:
+        for raw in args.keys.split(","):
+            item = raw.strip()
+            if not item:
+                continue
+            if item.startswith("@"):
+                try:
+                    key_script.append((None, max(1, int(item[1:]))))
+                except ValueError:
+                    pass
+                continue
+            key_script.append((item.upper(), args.key_delay))
+    key_script_pos = 0
+    key_wait = 0
+
+    def script_key(name: str) -> None:
+        """按一次脚本指定的键（按下 + 抬起）。"""
+        name = {"ENTER": "SELECT", "LEFT_SOFT": "SOFT_L",
+                "RIGHT_SOFT": "SOFT_R"}.get(name, name)
+        code = KEY_NAME_TO_CODE.get(name)
+        if code is None:
+            log(f"[keys] 未知键名 {name!r}，跳过")
+            return
+        if mode == "mrp" and mrp_loaded:
+            guarded("key_event", vm.key_event, code, True)
+            guarded("key_event", vm.key_event, code, False)
+        elif launcher and mode == "launcher":
+            launcher.handle_key(name)
+
     # ---------------- 主循环
     running = True
     frames = 0
@@ -715,6 +755,19 @@ def main(argv: list[str] | None = None) -> int:
         if mode == "mrp" and mrp_loaded:
             app.net.poll()
         shared_audio.tick()
+
+        # 按键脚本：到达间隔就按下一次
+        if key_script_pos < len(key_script):
+            name, delay = key_script[key_script_pos]
+            if key_wait <= 0:
+                if name is not None:
+                    script_key(name)
+                    key_wait = delay
+                else:
+                    key_wait = delay          # @N：纯等待
+                key_script_pos += 1
+            else:
+                key_wait -= 1
 
         frame = ui.draw(current_surface())
         screen.blit(frame, (0, 0))

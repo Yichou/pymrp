@@ -56,13 +56,26 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def isolated_env() -> Path:
-    """只复制 cfunction.ext + mythroad/*.mrp，排除应用自建缓存目录。"""
+    """只复制 cfunction.ext + mythroad/*.mrp，排除应用自建缓存目录。
+
+    字库（``mythroad/system/gb16.uc2``）也要带上：DSM 层的应用启动
+    第一件事就是 open 它来画中文，缺了会走另一条分支，崩溃类型从
+    「写未映射」变成「读未映射」，断言就对不上了（见 docs/21）。
+    """
     src = ROOT / "runtime"
     td = Path(tempfile.mkdtemp(prefix="pymrp-crash-"))
     (td / "mythroad").mkdir()
     shutil.copy2(src / "cfunction.ext", td / "cfunction.ext")
     for p in sorted((src / "mythroad").glob("*.mrp")):
         shutil.copy2(p, td / "mythroad" / p.name)
+    # 字库：优先原厂，没有就现场生成一份
+    try:
+        from mrp_emu.fontgen import ensure_uc2
+        ensure_uc2(td / "mythroad" / "system" / "gb16.uc2", log=lambda *a: None,
+                   factory_dirs=[src / "mythroad" / "fonts",
+                                 src / "mythroad" / "system"])
+    except Exception:  # pragma: no cover - 字库不可用不该让测试崩
+        pass
     return td
 
 
