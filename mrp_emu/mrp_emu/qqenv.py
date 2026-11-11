@@ -147,10 +147,14 @@ def prepare_qq_environment(workdir: str | Path,
         build_qqdsm_settings(host, port))
     put(f"mythroad/{QQDSM_DIR}/{QQDSM_INFO}", b"")
 
-    # 字库：内容大且生成慢，走 ensure_uc2（已存在就跳过）
+    # 字库：内容大且生成慢，走 ensure_uc2（已存在就跳过）。
+    # factory_dirs 指向发行包里的原厂字库目录 —— 原厂手工点阵字比任何
+    # 系统字体缩放出来的都清晰（见 docs/21）。
     try:
         from .fontgen import ensure_uc2
-        ensure_uc2(workdir / "mythroad" / FONT_DIR / FONT_GB16, log=log)
+        ensure_uc2(workdir / "mythroad" / FONT_DIR / FONT_GB16, log=log,
+                   factory_dirs=[workdir / "mythroad" / "fonts",
+                                 workdir / "mythroad" / FONT_DIR])
     except Exception as exc:  # noqa: BLE001
         if log:
             log(f"[qq-env] 字库准备失败: {exc}")

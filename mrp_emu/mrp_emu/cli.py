@@ -263,6 +263,22 @@ def main(argv: list[str] | None = None) -> int:
     skin = load_skin(args.skin or (workdir / "skin.json"))
     runtime = None if args.demo else find_runtime(workdir, args.runtime)
 
+    # ---------------- 系统字库（全局，与是否跑 QQ 无关）
+    # DSM 层的应用会直接读 ``mythroad/system/gb16.uc2`` 来画中文
+    # （实测 QQ 2007 启动第一件事就是 open 它，见 docs/21）。字库一旦
+    # 缺失或笔画粘连，所有应用的中文界面全糊。
+    # 这里无条件准备一次：优先复制发行包里的原厂点阵字，其次用系统
+    # 字体（宋体/雅黑）现场生成。
+    if runtime is not None:
+        try:
+            from .fontgen import ensure_uc2
+            ensure_uc2(workdir / "mythroad" / "system" / "gb16.uc2",
+                       log=log,
+                       factory_dirs=[workdir / "mythroad" / "fonts",
+                                     workdir / "mythroad" / "system"])
+        except Exception as exc:  # noqa: BLE001
+            log(f"[font] 系统字库准备失败（中文可能显示不出）: {exc}")
+
     # ---------------- 启动形态
     boot = args.boot or ("direct" if mrp_path else "boot")
     direct = boot == "direct"

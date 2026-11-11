@@ -10,6 +10,10 @@
 
 所以这里只复制**固定的文件集**：``cfunction.ext`` + ``mythroad/*.mrp``，
 不带任何应用自建缓存目录，保证每次断言的输入完全一致。
+
+字库（``mythroad/system/gb16.uc2``）也一并带上：DSM 层的应用启动第一件事
+就是 open 它来画中文，缺了会打 ``font load fail``，界面上的汉字全空
+（见 docs/21）。优先带原厂字库，没有就现场生成一份。
 """
 
 from __future__ import annotations
@@ -20,6 +24,19 @@ from pathlib import Path
 from typing import Callable
 
 RX_MRP = "R_Xplore_MTK_all（RX管理器）.mrp"
+
+
+def _copy_font(src: Path, td: Path) -> None:
+    """把系统点阵字库带进隔离环境。"""
+    system = td / "mythroad" / "system"
+    system.mkdir(parents=True, exist_ok=True)
+    try:
+        from mrp_emu.fontgen import ensure_uc2
+        ensure_uc2(system / "gb16.uc2", log=lambda *a: None,
+                   factory_dirs=[src / "mythroad" / "fonts",
+                                 src / "mythroad" / "system"])
+    except Exception:  # pragma: no cover - 字库不可用不该让测试崩
+        pass
 
 
 def make_rx_env(runtime: str | Path) -> tuple[Path | None, Callable[[], None]]:
@@ -36,6 +53,7 @@ def make_rx_env(runtime: str | Path) -> tuple[Path | None, Callable[[], None]]:
     # 只收 .mrp 文件：目录、.sid、应用缓存一律不带
     for p in sorted((src / "mythroad").glob("*.mrp")):
         shutil.copy2(p, td / "mythroad" / p.name)
+    _copy_font(src, td)
 
     def cleanup() -> None:
         shutil.rmtree(td, ignore_errors=True)

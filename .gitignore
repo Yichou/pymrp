@@ -20,3 +20,6 @@ ref/
 # 系统杂项
 Thumbs.db
 .DS_Store
+
+# 根目录临时产物（截图/对比图等）
+out/
