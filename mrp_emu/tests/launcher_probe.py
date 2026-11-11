@@ -60,8 +60,11 @@ def test_header() -> None:
 
     exts = {p.name: probe_entry_ext(p)
             for p in sorted((RUNTIME / "mythroad").glob("*.mrp"))}
-    check(exts and all(v == "start.mr" for v in exts.values()),
-          f"入口全部为 start.mr（{len(exts)} 个样本）", str(exts))
+    # 应用包的入口是 start.mr；插件包（abxmain.mrp 之类）的入口是 cfunction.ext。
+    # runtime 目录会随下载/清理变化，所以只允许这两种形态，不做绝对断言。
+    odd = {k: v for k, v in exts.items() if v not in ("start.mr", "cfunction.ext")}
+    check(exts and not odd,
+          f"入口均为 start.mr / cfunction.ext（{len(exts)} 个样本）", str(odd))
 
 
 def test_catalog() -> None:

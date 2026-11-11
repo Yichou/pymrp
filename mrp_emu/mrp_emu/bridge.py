@@ -85,6 +85,20 @@ class ArmCall:
         off = ((n - 4) * 4 + 7) & ~7
         return struct.unpack("<d", self.uc.mem_read(sp + off, 8))[0]
 
+    # -- 栈上按字节偏移取（AAPCS 变参布局要用）--------------------------
+    def stack_read(self, off: int, size: int) -> bytes:
+        """从栈底（SP）起按字节偏移读 —— AAPCS 变参的真实来源。"""
+        sp = self.uc.reg_read(UC_ARM_REG_SP)
+        return self.uc.mem_read(sp + off, size)
+
+    def fstack(self, off: int) -> float:
+        """栈上 offset 处的 double。"""
+        return struct.unpack("<d", self.stack_read(off, 8))[0]
+
+    def qstack(self, off: int) -> int:
+        """栈上 offset 处的 64 位整数。"""
+        return struct.unpack("<q", self.stack_read(off, 8))[0]
+
     def sarg(self, n: int) -> int:
         v = self.arg(n)
         return v - 0x100000000 if v & 0x80000000 else v

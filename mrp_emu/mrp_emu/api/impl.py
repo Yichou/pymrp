@@ -449,12 +449,46 @@ def sprintf(ctx, vm):
     dst = ctx.arg(0)
     fmt = ctx.mem.cstr(ctx.arg(1))
     specs = _parse_fmt(fmt)
-    vals = _collect(
-        specs,
-        get_int=lambda vi: ctx.arg(2 + vi),
-        get_q=lambda vi: ctx.qarg(2 + vi),
-        get_f=lambda vi: ctx.farg(2 + vi),
-    )
+
+    # AAPCS 变参布局：整数/指针前 4 个走 r0-r3（这里 r2/r3），
+    # double 永远走栈（8 字节、8 字节对齐），其余整数走栈（4 字节槽）。
+    # %f 的浮点实参不在 r2/r3 里 —— 按寄存器取会读到栈底的垃圾，
+    # 屏幕上就会冒出 "f" 这种残留字符。
+    reg = 2              # 还能用的整数寄存器
+    stk = 0              # 栈上已占用字节
+
+    def _int(_vi: int = 0) -> int:
+        nonlocal reg, stk
+        if reg < 4:
+            v = ctx.arg(reg)
+            reg += 1
+            return v
+        off = (stk + 3) & ~3
+        v = ctx.arg(4 + off // 4)
+        stk = off + 4
+        return v
+
+    def _wide(_vi: int = 0) -> int:
+        """64 位整数变参：寄存器放不下，直接走栈（8 字节对齐）。"""
+        nonlocal reg, stk
+        if reg < 4:
+            reg = 4
+        off = (stk + 7) & ~7
+        v = ctx.qstack(off)
+        stk = off + 8
+        return v
+
+    def _dbl(_vi: int = 0) -> float:
+        """double 变参：AAPCS 规定永远走栈（8 字节对齐）。"""
+        nonlocal reg, stk
+        if reg < 4:
+            reg = 4
+        off = (stk + 7) & ~7
+        v = ctx.fstack(off)
+        stk = off + 8
+        return v
+
+    vals = _collect(specs, _int, _wide, _dbl)
     text = _render(specs, vals, ctx.mem)
     try:
         raw = text.encode("gbk")
@@ -462,6 +496,22 @@ def sprintf(ctx, vm):
         raw = text.encode("utf-8")
     ctx.mem.write(dst, raw + b"\x00")
     ctx.ret(len(raw))
+
+
+@api("mr_stop_ex")
+def mr_stop_ex(ctx, vm):
+    """停止当前应用（对应 mythroad/mythroad.c 的 ``mr_stop_ex``）。
+
+    官方语义：置 ``mr_state=0`` 并通知宿主停止当前应用；``freemem != 0``
+    时额外释放屏幕缓冲。我们这边等价于「应用请求退出」——置 ``vm.exited``，
+    主循环下一帧统一收尾（停声音 / 关网络 / 关句柄）并退回系统界面。
+
+    这个槽位在官方 mythroad 的 C 库表里是 0x058，此前我们留成了空位 ——
+    应用一调就跳到地址 0。
+    """
+    vm.app.log("[mrp] mr_stop_ex 停止应用")
+    vm.exited = True
+    ctx.ret(MR_SUCCESS)
 
 
 @api("atoi")

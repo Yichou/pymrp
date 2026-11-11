@@ -94,8 +94,8 @@ pack_filename / start_filename                       当前包名与入口
 | `exit_probe.py` | 23 | mr_exit 槽位、shutdown_session 三件套、幂等、cli 消费分支、端到端退出 |
 | `crash_probe.py` | 15 | cli 无裸调 VM 调用、真实三国志崩溃捕获、崩溃后干净收尾、端到端崩溃隔离 |
 | `rx_env.py`（helper） | — | 为 RX 回归构造固定隔离快照，排除应用自建缓存目录 |
-| `fmt_probe.py` | 44 | sprintf 格式覆盖 / 宽度精度 / 浮点 / 长度修饰符 / **返回值字节数** / mr_sprintf |
-| `table_probe.py` | 11 | 我们的 mr_table 与 mrpoid 官方表的差异（0x048 起错位一格）与 ext 反推空位 |
+| `fmt_probe.py` | 49 | sprintf 格式覆盖 / 宽度精度 / 浮点 / 长度修饰符 / **返回值字节数** / **ARM 机器码端到端（AAPCS 变参布局）** |
+| `table_probe.py` | 14 | 我们的 mr_table 与 mythroad 官方表逐项对齐（0x000–0x07C）、mr_stop_ex、与 mr 层那张表的差异 |
 
 运行：`python tests/xxx.py`（全部无网络依赖，headless 可跑）。
 启动耗时诊断用 `PYMRP_TIMING=1 python run.py --frames 3`，

@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mrp_emu.api import impl  # noqa: E402
+from mrp_emu.api.dsmfuncs import DSM_FUNCS  # noqa: E402
+from mrp_emu.api.mrtable import MR_TABLE  # noqa: E402
 from mrp_emu.vm import Vm  # noqa: E402
 
 FAILS: list[str] = []
@@ -65,7 +67,13 @@ class _Ctx:
 
 
 def main() -> int:
+    import tempfile
+    from mrp_emu.app import App
+    tmp = Path(tempfile.mkdtemp(prefix='pymrp-fmt-'))
     vm = Vm(log=lambda *a: None)
+    app = App(vm, tmp, log=lambda *a: None, audio=False)
+    vm.app = app
+    vm.install_tables(MR_TABLE, DSM_FUNCS)   # ARM 端测试要按真实槽位地址跳
     mem = vm.mem
 
     def S(text: str) -> int:
@@ -181,6 +189,66 @@ def main() -> int:
     print("\n== 7. 未知转换符不崩 ==")
     got = impl._fmt("%q", [1], mem)
     check("未知转换符原样输出", got == "%q", repr(got))
+
+    print("\n== 8. ARM 端到端：AAPCS 变参布局 ==")
+    import struct
+    from unicorn.arm_const import (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
+                                   UC_ARM_REG_R3, UC_ARM_REG_SP)
+
+    def run_arm(words: list[int], extra: list[int], stop_off: int,
+                sp: int | None = None, stack: bytes = b"") -> int:
+        """在 0x90000 跑一段 ARM 机器码，返回 r0。"""
+        blob = b"".join(struct.pack("<I", w) for w in words + extra)
+        addr = 0x90000
+        vm.mem.write(addr, blob)
+        if sp is not None:
+            vm.uc.reg_write(UC_ARM_REG_SP, sp)
+            if stack:
+                vm.mem.write(sp, stack)
+        vm.uc.emu_start(addr, addr + stop_off, 0, 0)
+        return vm.uc.reg_read(UC_ARM_REG_R0)
+
+    slot_sprintf = vm.mr_table + 0x044
+    buf = 0x90400
+    fmtbuf = 0x90480
+    strbuf = 0x904C0
+    sp = 0x90500                      # 16 字节对齐
+
+    # (1) %d：整数变参在 r2
+    mem.put_cstr(fmtbuf, "%d")
+    r0 = run_arm(
+        [0xE59F0010, 0xE59F1010, 0xE59F2010, 0xE59F3010, 0xE12FFF33, 0xEAFFFFFE],
+        [buf, fmtbuf, 12345, slot_sprintf], 0x14)
+    check("ARM: %d 取 r2 的整数", mem.cstr(buf) == "12345", repr(mem.cstr(buf)))
+    check("ARM: sprintf 返回字节数", r0 == 5, f"= {r0}")
+
+    # (2) %.1f：double 变参走栈（AAPCS：浮点永远在栈上，8 字节对齐）
+    mem.put_cstr(fmtbuf, "%.1f")
+    r0 = run_arm(
+        [0xE59F000C, 0xE59F100C, 0xE59F300C, 0xE12FFF33, 0xEAFFFFFE],
+        [buf, fmtbuf, slot_sprintf], 0x10,
+        sp=sp, stack=struct.pack("<d", 3.14159))
+    check("ARM: %.1f 从栈上取 double", mem.cstr(buf) == "3.1",
+          repr(mem.cstr(buf)))
+
+    # (3) 混合：%s + %.1f + %d —— 验证栈偏移随参数类型推进
+    mem.put_cstr(fmtbuf, "%s %.1f %d")
+    mem.put_cstr(strbuf, "KB")
+    stack = struct.pack("<d", 2.5) + struct.pack("<i", 42)
+    r0 = run_arm(
+        [0xE59F0010, 0xE59F1010, 0xE59F2010, 0xE59F3010, 0xE12FFF33, 0xEAFFFFFE],
+        [buf, fmtbuf, strbuf, slot_sprintf], 0x14,
+        sp=sp, stack=stack)
+    check("ARM: 混合参数（%s %.1f %d）", mem.cstr(buf) == "KB 2.5 42",
+          repr(mem.cstr(buf)))
+
+    # (4) mr_stop_ex：调用后应置 vm.exited
+    slot_stop = vm.mr_table + 0x058
+    vm.exited = False
+    run_arm(
+        [0xE59F3004, 0xE12FFF33, 0xEAFFFFFE],
+        [slot_stop], 0x08)
+    check("ARM: mr_stop_ex 置 vm.exited", vm.exited is True)
 
     print(f"\n== 摘要 ==  fmt_probe {PASS} 项通过 / {len(FAILS)} 项失败")
     return 0 if not FAILS else 1

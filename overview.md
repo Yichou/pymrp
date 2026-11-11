@@ -439,3 +439,52 @@ cli 主循环每帧检查 `vm.exited` 并触发。
 
 **遗留**：RX 本地进不去列表（启动卡在「下载字库」对话框，源站斯凯已停运），
 所以本地没法逐像素复现老板画面；那需要从真机导出 skyfont 相关缓存。
+
+---
+
+## 补充（老板确认后）：那个 "f" 的真根因 + 按官方补齐
+
+老板给了关键信息：**RX 是他自己开发的，那一处是调用 sprintf 格式化文件大小**，
+并要求参考 mrpoid（斯凯官方引擎源码在 `mr` 目录）把漏的补上。
+
+### 根因：`%f` 的浮点实参我们按寄存器取
+
+AAPCS 规定**变参函数的 double 实参永远走栈**（8 字节、8 字节对齐），不占整数
+寄存器。我们按 `ctx.arg(2+i)` 一律取寄存器 → `%f` 读到栈底垃圾 → 格式化结果里
+留下一个 "f"。**修法**：`sprintf` 自己模拟 AAPCS 栈布局（整数前 4 个走 r0-r3、
+double 永远走栈、其余整数走 4 字节槽）；`ArmCall` 加 `stack_read/fstack/qstack`。
+
+**用真实 ARM 机器码验证**（`blx` 真槽位，不是 Python 调函数）：
+```
+[PASS] ARM: %d 取 r2 的整数          '12345'
+[PASS] ARM: sprintf 返回字节数         = 5
+[PASS] ARM: %.1f 从栈上取 double      '3.1'
+[PASS] ARM: 混合参数（%s %.1f %d）    'KB 2.5 42'
+[PASS] ARM: mr_stop_ex 置 vm.exited
+```
+
+### 槽位表真相修正：斯凯有**两张**表，我之前比错了
+
+| 表 | 出处 | 给谁用 | 0x044 | 0x048 | 0x058 |
+|---|---|---|---|---|---|
+| **mythroad 层** | `mythroad/mythroad.c` | **斯凯 mythroad 引擎 / DSM 应用（我们的 cfunction.ext）** | mr_sprintf | mr_atoi | **mr_stop_ex** |
+| mr 层 | `mr/mythroad.c` | MRP 应用 | sprintf | **mr_sprintf** | NULL |
+
+mr 层多一个 `mr_sprintf` → 整表差一格。我第一次就是拿 **mr 层**那张比，
+得出「错位 112 项」的**错误结论**。按 **mythroad 层**逐项核对后：
+
+- 0x000–0x057 ✓ 全一致；
+- **0x058 官方是 `mr_stop_ex`，我们是空位** → 应用一调 `blx` 就跳地址 0 → **崩**。
+  已补：等价于「应用请求退出」（置 `vm.exited` → 统一收尾 → 退回桌面）；
+- 0x05C–0x07C ✓ 全一致。
+
+**现在 0x000–0x07C 与官方逐项一致。**
+
+**改动文件**：`api/impl.py`（AAPCS 取参 + `mr_stop_ex`）、`api/mrtable.py`
+（0x058）、`bridge.py`（`stack_read/fstack/qstack`）、`tests/table_probe.py`
+（改用 mythroad 快照）、`tests/fmt_probe.py`（+ARM 端到端）、`tests/launcher_probe.py`
+（入口断言容忍插件的 cfunction.ext，防目录漂移）。
+
+**验证**：`fmt_probe` **49/49**、`table_probe` **14/14**；全套 **17 个探针 rc=0**；
+`mrp_emu.pyz` 重打包 **109.0 KB**，从单文件版跑三国志 200 帧零异常。
+知识库 `docs/19` 已按新结论重写。

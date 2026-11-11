@@ -78,6 +78,15 @@ MR_TABLE: list[BridgeFunc] = [
     #   所以放 reserve0/reserve1），且实测 4 个真实 MRP 从不调用 0x048 之后的槽位
     #   （应用走 DSM 层 51 槽；C 库由 ext 自己的 _mr_c_function_new 注册接管）。
     #   差异清单与风险见 tests/table_probe.py、docs/19。
+    # 槽位顺序说明（2026-11-10 核对 mrpoid mythroad/mythroad.c 的
+    # _mr_c_function_table，**这才是斯凯 mythroad 引擎给应用用的那张表**）：
+    #   0x000–0x044 与官方完全一致（malloc…strlen…strstr…sprintf）；
+    #   0x048 官方是 mr_atoi（我们也是 atoi）——注意 **mr 层**（mr/mythroad.c，
+    #   给 MRP 应用用）那张表在 0x048 是 mr_sprintf，比 mythroad 层多一项，
+    #   两张表不能混着比；
+    #   0x054 官方是 NULL(reserve)；
+    #   **0x058 官方是 mr_stop_ex**（此前我们留成空位 → 应用一调就跳地址 0），
+    #   从这里往后的槽位与官方逐项对齐。
     F(0x000, "mr_malloc"),
     F(0x004, "mr_free"),
     F(0x008, "mr_realloc"),
@@ -99,8 +108,8 @@ MR_TABLE: list[BridgeFunc] = [
     F(0x048, "atoi"),
     F(0x04C, "strtoul"),
     F(0x050, "rand"),
-    F(0x054, "reserve0", init=_const(lambda vm: 0)),
-    F(0x058, "reserve1", init=_const(lambda vm: 0)),
+    F(0x054, "reserve0", init=_const(lambda vm: 0)),   # 官方：NULL（保留）
+    F(0x058, "mr_stop_ex"),                             # 官方：停止当前应用
     F(0x05C, "_mr_c_internal_table", init=_const(lambda vm: 0)),
     F(0x060, "_mr_c_port_table", init=_const(lambda vm: 0)),
     F(0x064, "_mr_c_function_new", fn=_mr_c_function_new),
