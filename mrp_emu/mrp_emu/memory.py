@@ -60,6 +60,41 @@ class Allocator:
         self._coalesce()
         return True
 
+    def reserve(self, n: int) -> int:
+        """预留一块**固定地址**的内存，返回 0 表示失败。
+
+        给 VM 内存（``mr_mem_get``）用：斯凯的插件机制把整个运行内存
+        dump 到 ``plugins/dump%d``，退出插件后按**同一绝对地址**读回
+        恢复，所以每轮必须拿到同一块。
+
+        普通的 first-fit 堆做不到：碎片一多，同尺寸的两次分配就落到
+        不同地址（实测 0x280000 vs 0x299000），恢复出来的指针全是野的。
+
+        预留区从堆顶往下切，且**不进入空闲链表** —— 普通 malloc 拿不到
+        它，free 也不会归还，地址因此恒定。
+        """
+        if n <= 0:
+            n = 1
+        n = (n + ALIGN - 1) & ~(ALIGN - 1)
+        # 从空闲链表里找一块 >= n 的连续空间，把它从链表摘掉当预留区
+        for i, blk in enumerate(self.free):
+            addr, size = blk
+            if size < n:
+                continue
+            # 预留区取这块空间的**起始地址**，剩下的挂回链表
+            if size - n >= ALIGN:
+                blk[0] += n
+                blk[1] -= n
+                reserved = addr
+            else:
+                # 剩余太小，整块给出（预留区会略大于 n，但地址仍恒定）
+                self.free.pop(i)
+                reserved = addr
+            self.used[reserved] = n
+            self.peak = max(self.peak, self.in_use())
+            return reserved
+        return 0
+
     def _coalesce(self) -> None:
         out: list[list[int]] = []
         for blk in self.free:

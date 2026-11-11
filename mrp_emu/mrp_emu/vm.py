@@ -110,6 +110,15 @@ class Vm:
         # 官方 mr_stop_ex 只把 mr_state 置 IDLE、停定时器、释放内存，
         # **不结束整个应用**（见 mythroad.c:7266），它只是重启链的一环。
         self.instance_stopped = False
+        # 由 mr_mem_get 发出的 VM 内存块（对应官方的 Origin_LG_mem_base）。
+        # 重启链要求「先 free 后 alloc」拿到同一地址，否则 dump/restore
+        # 恢复出来的指针全是野的（斯凯插件机制把整个运行内存 dump 到
+        # plugins/dump%d，退出插件后按同一地址读回恢复）。
+        self.vm_mem_block: int | None = None
+        self.vm_mem_len: int = 0
+        # VM 内存块的**专用保留区**：从堆里单独划一块固定地址，
+        # 每轮 mem_get 都从这里发。理由见 alloc_vm_memory()。
+        self.vm_mem_reserved: int | None = None
 
     # ------------------------------------------------------------ 应用栈
     def push_app(self, info: dict) -> None:
@@ -121,6 +130,59 @@ class Vm:
         if not self.app_stack:
             return None
         return self.app_stack.pop()
+
+    # ------------------------------------------------------------ 内存
+    def alloc_vm_memory(self, size: int) -> int:
+        """给 ext 发一块 VM 内存，**地址跨重启恒定**。
+
+        斯凯的插件机制把整个 MRP 运行内存 dump 到 ``plugins/dump%d``，
+        退出插件后按**同一地址**读回恢复（dump 记录的是绝对地址）。
+        如果每轮 ``mr_mem_get`` 拿到不同地址，恢复出来的指针全是野的 ——
+        实测崩溃点就是 ``Invalid memory read @0x1C6826F4``（远超 8MB
+        模拟空间，是典型野指针）。
+
+        用普通 first-fit 堆做不到地址恒定：碎片一多，同尺寸的两次
+        分配就落到不同地址（实测 0x280000 vs 0x299000）。
+        所以这里给 VM 内存**单独预留一块固定区域**，每轮都从它发，
+        且这块区域不参与普通 mr_malloc 的竞争。
+        """
+        if self.vm_mem_reserved is None:
+            block = self.mem.heap.reserve(size)
+            if not block:
+                # 预留失败（堆太小）退回普通分配
+                return self.mem.malloc(size)
+            self.vm_mem_reserved = block
+            self.vm_mem_len = size
+            self.log(f"[vm] 预留 VM 内存区 0x{block:X} ({size // 1024}KB)")
+        self.vm_mem_block = self.vm_mem_reserved
+        return self.vm_mem_block
+
+    def release_vm_memory(self) -> bool:
+        """``mr_stop_ex(freemem!=0)`` 时释放 VM 内存块（官方 mr_mem_free）。
+
+        官方 mythroad.c:7364 在 ``mr_stop_ex(freemem!=0)`` 里调
+        ``mr_mem_free(Origin_LG_mem_base, Origin_LG_mem_len)``。
+        我们这边必须做同样的事：否则 6MB 堆被第一轮 4MB 占住后，
+        第二轮 ``mr_mem_get`` 直接失败（返回 0），插件根本起不来；
+        而且 dump 出来的内存内容也无处安放。
+
+        VM 内存走的是**专用预留区**，这里只把「本轮已释放」标记掉，
+        预留区本身留着下一轮复用 —— 地址必须恒定（见 alloc_vm_memory）。
+        """
+        block = self.vm_mem_block
+        if not block:
+            return False
+        self.vm_mem_block = None
+        if block == self.vm_mem_reserved:
+            self.log(f"[vm] 释放 VM 内存块 0x{block:X}（预留区保留，下轮复用）")
+            return True
+        try:
+            ok = self.mem.free(block)
+        except Exception:  # pragma: no cover
+            return False
+        if ok:
+            self.log(f"[vm] 释放 VM 内存块 0x{block:X}")
+        return ok
 
     # ------------------------------------------------------------ 内存
     def _map_memory(self) -> None:

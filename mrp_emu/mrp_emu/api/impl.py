@@ -528,9 +528,22 @@ def mr_stop_ex(ctx, vm):
 
     这个槽位在官方 mythroad 的 C 库表里是 0x058，此前我们留成了空位 ——
     应用一调就跳到地址 0。
+
+    ``freemem != 0`` 时必须**释放 VM 内存块**（官方 mythroad.c:7364：
+    ``mr_mem_free(Origin_LG_mem_base, Origin_LG_mem_len)``）。这不是
+    可选项：斯凯的插件机制靠「dump 整个运行内存到 plugins/dump%d /
+    退出插件后读回恢复」实现现场保存，而 dump 的是**内存内容**，
+    恢复时按**同一地址**写回 —— 下一轮 ``_mr_mem_init()`` 重新
+    ``mr_mem_get()`` 必须拿到和上一轮**完全相同**的地址，否则恢复出来
+    的指针全是野的（实测崩溃点：``Invalid memory read @0x1C6826F4``）。
+    first-fit 分配器在「先 free 后 alloc」时会复用同一块，地址自然一致。
     """
     freemem = ctx.arg(0)
     vm.app.log(f"[mrp] mr_stop_ex 停止当前实例 (freemem={freemem})")
+    # 官方语义：freemem != 0 时释放本实例的 VM 内存块。
+    # 释放后下一轮 mem_get 会拿到同一地址 -> dump/restore 的地址一致性。
+    if freemem:
+        vm.release_vm_memory()
     # 只标记「本实例停止」，由主循环决定重启还是退出：
     #   - 有上级 MRP 在栈里 => 切回上级现场
     #   - 没有上级           => 才是真正的退出
@@ -1428,10 +1441,20 @@ def dsm_exit(ctx, vm):
 
 @api("mem_get")
 def dsm_mem_get(ctx, vm):
-    """int32 mem_get(char** mem_base, uint32* mem_len)"""
+    """int32 mem_get(char** mem_base, uint32* mem_len)
+
+    官方 mythroad.c:626 的 ``_mr_mem_init()`` 调用它申请整块 VM 内存
+    （``Origin_LG_mem_base``），MRP 的 Lua 状态、堆对象都在里面。
+
+    地址必须**跨重启恒定**：斯凯插件机制把整个运行内存 dump 到
+    ``plugins/dump%d``（dump 记录的是绝对地址），退出插件后按同一地址
+    读回恢复 —— 地址漂移就全是野指针（实测崩溃点
+    ``Invalid memory read @0x1C6826F4``）。所以走 ``alloc_vm_memory()``
+    的专用预留区，每轮发同一块。
+    """
     base_p, len_p = ctx.arg(0), ctx.arg(1)
     size = 4 * 1024 * 1024
-    block = ctx.mem.malloc(size)
+    block = vm.alloc_vm_memory(size)
     if not block:
         ctx.ret(MR_FAILED)
         return
@@ -1443,7 +1466,20 @@ def dsm_mem_get(ctx, vm):
 
 @api("mem_free")
 def dsm_mem_free(ctx, vm):
-    ctx.mem.free(ctx.arg(0))
+    """int32 mem_free(char* mem, uint32 mem_len)
+
+    VM 内存块走的是专用预留区，**不归还给普通堆** —— 地址要恒定，
+    否则插件退出后恢复出来的现场全是野指针。普通 malloc 的块照常释放。
+    """
+    addr = ctx.arg(0)
+    if addr and addr == vm.vm_mem_reserved:
+        # 预留区：只标记「本轮已释放」，地址留着下一轮复用
+        vm.vm_mem_block = None
+        ctx.ret(MR_SUCCESS)
+        return
+    if addr and addr == vm.vm_mem_block:
+        vm.vm_mem_block = None
+    ctx.mem.free(addr)
     ctx.ret(MR_SUCCESS)
 
 

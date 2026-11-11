@@ -70,6 +70,7 @@
 | [21 系统字库与字体清晰度](21-系统字库与字体清晰度.md) | 「中文糊成一坨」的根因（DSM 系统点阵字库，非宿主 UI 字体）、原厂 `fonts/gb16.uc2` 复用、缩放导致笔画粘连、pygame SRCALPHA 的 alpha 通道语义、启动时墨迹率体检与自动替换 |
 | [22 字库与宿主接口语义对齐](22-字库与宿主接口语义对齐.md) | 支付成功后野指针崩溃的根因：`mr_getUserInfo` 字段错位（`type`/`ver` 未填）、未实现的 `mr_plat` 误返回 `MR_SUCCESS`、`mr_platEx` 未写 output 缓冲区；与 docs/21 同源的宿主接口语义问题 |
 | [23 插件调用与上级现场恢复](23-插件调用与上级现场恢复.md) | 插件返回后退回主界面的根因：真机插件调用是 ext 内部的重启链（`RunFile` → `MR_STATE_RESTART` → `mr_timer` → `mr_stop` + `_mr_intra_start`），`mr_stop_ex` 只停实例不退应用；另修 `fs.resolve` 找不到 `mythroad/` 下插件包的问题 |
+| [24 插件 dump 恢复机制](24-插件dump恢复机制.md) | 斯凯插件机制的逆向结论：ext 把整个运行内存 dump 到 `plugins/dump%d`、退出插件后按**同一绝对地址**读回恢复；四个断点——`proxy.51mrp.com` DNS 缺失、`mr_stop_ex` 不释放 VM 内存、first-fit 堆地址漂移、`plugins/dump0` 路径解析到错误目录；依据 `skyengine-v2` 官方 e2e 与 `cfunction.ext` 字符串表 |
 
 ### 第四篇：考据
 

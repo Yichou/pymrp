@@ -97,9 +97,14 @@ class VirtualFs:
         #   * 插件重启链加载不到插件包（"ipqq.mrp" 找不到），
         #   * 插件里的相对路径读写（"startqq.mr"、"*.cfg"）同样落错地方。
         #
-        # 注意：第 1、2 条只在**目标是文件**时才采纳 —— 目录形态
-        # （"." / "mythroad" / "plugins/"）必须保持原样，否则
-        # "浏览目录"语义会被改坏（RX 管理器依赖它）。
+        # 采纳条件（比「必须是文件」更宽）：
+        #   * 目标是**文件** -> 采纳（读取既有文件）；
+        #   * 目标的**父目录存在** -> 采纳（新建文件，如斯凯插件机制的
+        #     ``plugins/dump%d`` 现场快照；文件还不存在，但必须落在
+        #     mythroad/plugins/ 下，否则插件重启后按同一路径读不回来，
+        #     恢复出来的指针全是野的）。
+        # 纯目录形态（"." / "mythroad" / "plugins/"）保持原样，
+        # 否则「浏览目录」语义会被改坏（RX 管理器依赖它）。
         if not n.startswith(("mythroad/", "file:/")) and n not in (".", "..", ""):
             prefixes = []
             if self.work_path:
@@ -115,8 +120,17 @@ class VirtualFs:
                     ctarget.relative_to(self.root)
                 except ValueError:
                     continue
-                # 只在命中**文件**时采纳（目录留给原路径语义）
                 if ctarget.is_file():
+                    n = cand
+                    break
+                # 新建文件：父目录存在即可（dump 快照等）。
+                # 只对**带子目录形态且不是目录本身**的路径生效
+                # （"plugins/dump0"）—— 裸名（"dump0"）、末尾带 "/"
+                # （"plugins/"）、纯目录名（"mythroad"）必须保持原样，
+                # 否则浏览目录语义会被改坏（RX 管理器依赖它）。
+                if ("/" in n and not n.endswith("/")
+                        and not ctarget.is_dir()
+                        and ctarget.parent.is_dir()):
                     n = cand
                     break
         # "."/".." 归一化后**钳制在 root 内**：真机上根目录的 ".." 仍是根目录。

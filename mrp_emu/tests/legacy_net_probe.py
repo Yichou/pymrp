@@ -137,10 +137,20 @@ def echo_handler(conn, results):
 def test_parse() -> None:
     print("\n-- 1. DNS 映射解析 --")
     default = parse_dns_map(None)
-    check(len(default) == 3, "默认表 3 条", str(default))
-    check({m.source for m in default} ==
-          {"rop.skymobiapp.com", "spd.skymobiapp.com", "wap.skmeg.com"},
-          "默认覆盖 3 个斯凯老域名")
+    # 清单对齐 skyengine-v2 的 e2e 用例（test/e2e/dota/download-plugin.test.ts、
+    # test/e2e/optwar/speed.test.ts 等）：浏览器插件链要访问 proxy.51mrp.com /
+    # proxy2.51mrp.com 下载组件，缺了插件就起不来。
+    expect_sources = {
+        "rop.skymobiapp.com",
+        "spd.skymobiapp.com",
+        "proxy.51mrp.com",
+        "proxy2.51mrp.com",
+        "wap.skmeg.com",
+    }
+    check(len(default) == len(expect_sources),
+          f"默认表 {len(expect_sources)} 条", str(default))
+    check({m.source for m in default} == expect_sources,
+          f"默认覆盖 {len(expect_sources)} 个斯凯老域名")
     check(all(m.address == "159.75.119.124" and m.port is None
               for m in default), "默认目标 159.75.119.124、不改端口")
     check(parse_dns_map("") == [], "传空字符串可清空覆写")

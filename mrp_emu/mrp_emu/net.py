@@ -59,9 +59,16 @@ CMWAP_PROXY_IP = 0x0A0000AC       # 10.0.0.172 移动 cmwap 网关
 # 把这批老域名覆写到他们复刻的服务端 159.75.119.124（mrp.jysafe.cn 同机）。
 # 格式与 v2 的 --dns-map 一致：SOURCE->IPv4[:PORT];...
 # 传空字符串可清空；SOURCE 也可以是点分 IP，用来覆盖 cmwap 网关。
+#
+# 清单对齐 skyengine-v2 的 e2e 用例（test/e2e/dota/download-plugin.test.ts、
+# test/e2e/optwar/speed.test.ts 等）：浏览器插件链会访问 proxy.51mrp.com /
+# proxy2.51mrp.com 下载组件（brwmain/brwshell/embrw 等），缺了这两条
+# 映射插件组件就下载不下来，表现为「插件打开后立刻退到主界面」。
 DEFAULT_DNS_MAP = (
     "rop.skymobiapp.com->159.75.119.124;"
     "spd.skymobiapp.com->159.75.119.124;"
+    "proxy.51mrp.com->159.75.119.124;"
+    "proxy2.51mrp.com->159.75.119.124;"
     "wap.skmeg.com->159.75.119.124"
 )
 
