@@ -515,17 +515,26 @@ def sprintf(ctx, vm):
 
 @api("mr_stop_ex")
 def mr_stop_ex(ctx, vm):
-    """停止当前应用（对应 mythroad/mythroad.c 的 ``mr_stop_ex``）。
+    """停止**当前 MRP 实例**（对应 mythroad/mythroad.c 的 ``mr_stop_ex``）。
 
-    官方语义：置 ``mr_state=0`` 并通知宿主停止当前应用；``freemem != 0``
-    时额外释放屏幕缓冲。我们这边等价于「应用请求退出」——置 ``vm.exited``，
-    主循环下一帧统一收尾（停声音 / 关网络 / 关句柄）并退回系统界面。
+    官方语义（mythroad.c:7266）：把 ``mr_state`` 置 IDLE、停定时器、
+    按需释放屏幕缓冲与内存，**不调用 ``mr_exit()``、不结束整个应用**。
+
+    它是**插件重启链的一环**：``mr_stop()`` -> ``mr_stop_ex(TRUE)`` ->
+    ``_mr_intra_start()`` 加载下一个 MRP 包。真机上应用调插件时走的就是
+    这条路径，若这里直接退到系统桌面，插件就永远跑不起来。
+
+    真正的「退出到桌面」是 ``mr_exit()``（0x0D8）与 DSM 层 ``exit()``。
 
     这个槽位在官方 mythroad 的 C 库表里是 0x058，此前我们留成了空位 ——
     应用一调就跳到地址 0。
     """
-    vm.app.log("[mrp] mr_stop_ex 停止应用")
-    vm.exited = True
+    freemem = ctx.arg(0)
+    vm.app.log(f"[mrp] mr_stop_ex 停止当前实例 (freemem={freemem})")
+    # 只标记「本实例停止」，由主循环决定重启还是退出：
+    #   - 有上级 MRP 在栈里 => 切回上级现场
+    #   - 没有上级           => 才是真正的退出
+    vm.instance_stopped = True
     ctx.ret(MR_SUCCESS)
 
 

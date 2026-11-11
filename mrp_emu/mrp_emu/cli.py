@@ -650,6 +650,16 @@ def main(argv: list[str] | None = None) -> int:
             log("[vm] 应用调用 mr_exit()")
             back_to_home("应用退出（mr_exit）")
             continue
+        if mode == "mrp" and mrp_loaded and vm.instance_stopped:
+            # mr_stop_ex：只停掉当前 MRP 实例，不等于退出应用。
+            # 真机（mythroad.c:7266）里它是插件重启链的一环：
+            #   RunFile -> MR_STATE_RESTART -> mr_timer -> mr_stop() -> _mr_intra_start()
+            # 插件返回时 MRF_Exit 恢复 old_pack_filename，再次 RESTART 回到上级。
+            # 所以这里既不能退桌面，也不能把会话拆掉 ——
+            # 让 ext 自己在下一帧 timer 里完成重启。
+            vm.instance_stopped = False
+            log("[vm] mr_stop_ex：当前实例停止，等待 ext 重启链接管")
+            continue
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False

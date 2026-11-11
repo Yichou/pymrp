@@ -85,6 +85,40 @@ class VirtualFs:
                 n = "mythroad/" + n[len(p):].lstrip("/")
                 break
         n = n.lstrip("/")
+        # 相对路径的解析顺序（对齐真机）：
+        #
+        #   1) 当前工作路径 work_path —— 由 mr_platEx(1204)/dsmSwitchPath 维护；
+        #   2) MRP 包安装目录 mythroad/ —— 真机上所有 MRP 包都装在这里，
+        #      插件重启时 ext 用 mr_open("ipqq.mrp") 找插件包，裸名就是
+        #      相对 mythroad/ 的；插件本体常在 mythroad/plugins/ 下；
+        #   3) workdir 根目录 —— 兜底。
+        #
+        # 此前 resolve() 只认第 3 条，导致：
+        #   * 插件重启链加载不到插件包（"ipqq.mrp" 找不到），
+        #   * 插件里的相对路径读写（"startqq.mr"、"*.cfg"）同样落错地方。
+        #
+        # 注意：第 1、2 条只在**目标是文件**时才采纳 —— 目录形态
+        # （"." / "mythroad" / "plugins/"）必须保持原样，否则
+        # "浏览目录"语义会被改坏（RX 管理器依赖它）。
+        if not n.startswith(("mythroad/", "file:/")) and n not in (".", "..", ""):
+            prefixes = []
+            if self.work_path:
+                prefixes.append(self.work_path.rstrip("/") + "/")
+            prefixes.append("mythroad/")
+            for prefix in prefixes:
+                cand = prefix + n
+                cparts = [s for s in cand.split("/") if s and s != "."]
+                if not cparts:
+                    continue
+                ctarget = self.root.joinpath(*cparts).resolve()
+                try:
+                    ctarget.relative_to(self.root)
+                except ValueError:
+                    continue
+                # 只在命中**文件**时采纳（目录留给原路径语义）
+                if ctarget.is_file():
+                    n = cand
+                    break
         # "."/".." 归一化后**钳制在 root 内**：真机上根目录的 ".." 仍是根目录。
         # 这里若返回 None，ext 会把空结果当 NULL 字符串交给内部 sprintf("%s")，
         # 直接解引用地址 0 —— RX 管理器浏览根目录时的崩溃就是这么来的。

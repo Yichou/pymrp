@@ -242,13 +242,24 @@ def main() -> int:
     check("ARM: 混合参数（%s %.1f %d）", mem.cstr(buf) == "KB 2.5 42",
           repr(mem.cstr(buf)))
 
-    # (4) mr_stop_ex：调用后应置 vm.exited
+    # (4) mr_stop_ex：只停当前 MRP 实例，**不**等于退出应用
+    #
+    # 真机（mythroad.c:7266）的 mr_stop_ex 只把 mr_state 置 IDLE、停定时器、
+    # 释放内存，不调 mr_exit()、不结束整个应用 —— 它是插件重启链的一环
+    # （mr_stop() -> mr_stop_ex(TRUE) -> _mr_intra_start() 加载下一个 MRP）。
+    # 所以它必须置 instance_stopped，而**不能**置 vm.exited，
+    # 否则插件一启动就被判定为「应用退出」-> 退回系统主界面。
     slot_stop = vm.mr_table + 0x058
     vm.exited = False
+    vm.instance_stopped = False
     run_arm(
         [0xE59F3004, 0xE12FFF33, 0xEAFFFFFE],
         [slot_stop], 0x08)
-    check("ARM: mr_stop_ex 置 vm.exited", vm.exited is True)
+    check("ARM: mr_stop_ex 置 instance_stopped（停实例，不退应用）",
+          vm.instance_stopped is True)
+    check("ARM: mr_stop_ex 不置 vm.exited（插件链不被误判为退出）",
+          vm.exited is False)
+    vm.instance_stopped = False
 
     print(f"\n== 摘要 ==  fmt_probe {PASS} 项通过 / {len(FAILS)} 项失败")
     return 0 if not FAILS else 1

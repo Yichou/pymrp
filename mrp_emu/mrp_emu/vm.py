@@ -92,6 +92,36 @@ class Vm:
         self.instr_count = 0
         self._codehook = None
 
+        # ---- MRP 应用栈（真机 mythroad 的 RunFile / Exit 机制）----
+        #
+        # 真机（mythroad.c）里插件调用是一个**重启链**：
+        #   RunFile(pack, entry, param)  -> MRF_RunFile 设 pack_filename /
+        #       start_filename，mr_state = MR_STATE_RESTART
+        #   下一帧 mr_timer() 命中 RESTART 分支 -> mr_stop() + _mr_intra_start()
+        #   插件里 Exit() -> MRF_Exit 发现 old_pack_filename 非空 ->
+        #       恢复上级包名，再次 RESTART -> 回到上级 MRP 现场
+        #
+        # 我们把「当前跑的是哪个 MRP」显式记在栈上：
+        #   push：上级 MRP 调插件时压入（保留上级现场）
+        #   pop ：插件返回时弹出并恢复上级
+        # 栈非空 => 插件返回应回到上级，而不是退回系统桌面。
+        self.app_stack: list[dict] = []
+        # mr_stop_ex 置位：当前 MRP 实例已停止，等主循环决定重启还是退出。
+        # 官方 mr_stop_ex 只把 mr_state 置 IDLE、停定时器、释放内存，
+        # **不结束整个应用**（见 mythroad.c:7266），它只是重启链的一环。
+        self.instance_stopped = False
+
+    # ------------------------------------------------------------ 应用栈
+    def push_app(self, info: dict) -> None:
+        """压入上级 MRP 现场（插件调用时用）。"""
+        self.app_stack.append(info)
+
+    def pop_app(self) -> dict | None:
+        """弹出上级 MRP 现场（插件返回时用）。"""
+        if not self.app_stack:
+            return None
+        return self.app_stack.pop()
+
     # ------------------------------------------------------------ 内存
     def _map_memory(self) -> None:
         ptr = ctypes.addressof(self.mem._c_buf)
