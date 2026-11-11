@@ -14,20 +14,26 @@
 ```
  你的 .mrp 文件
       │  内层：gzip 压缩的若干条目
-      │  其中 .mr 是 mythroad 字节码，.ext 是 ARM 机器码
+      │  其中 .mr 是 mythroad 字节码（\x1bMRP 头，Lua 5.1 格式），.ext 是 ARM 机器码
       ▼
  mythroad 层（cfunction.ext，ARM 机器码，331 KB）
       │  解释 .mr 字节码、管理资源、提供 mrc_* 应用级 API
       │  自己通过 mr_open/mr_read 读 .mrp 包
       ▼
- SkyEngine 虚拟机核心（真机上烧在 ROM 里）
-      │  执行 ARM 指令、提供 mr_* 系统级 API（文件/图形/声音/网络）
+ mythroad 宿主层（mythroad.c，9679 行 + src/ 改名版 Lua 5.0 解释器）
+      │  mr_* 系统级 API（文件/图形/声音/网络）、MRPG 解包、事件循环 mr_timer、
+      │  插件链 MRF_RunFile、内存模型 mr_mem_get/free
       ▼
  手机硬件（MTK 6225/6226/6235 等）
 ```
 
 **一句话**：`.mrp` 不是脚本，里面装的是 ARM 机器码和字节码；模拟器要做的就是
 **造一个 ARM 执行环境 + 一套系统 API**，然后把这个包喂进去。
+
+> **我们模拟器当前的位置**：`cfunction.ext` 这一层直接可用（Unicorn 跑 ARM 码），
+> 但**最底下那层 mythroad 宿主是我们用 Python 手写的**（`api/impl.py` 1502 行）——
+> 也就是在"猜"官方语义。想彻底对齐，得用 `mythroad.c` 源码自编译一个真虚拟机。
+> 详见 [26 自编译 mythroad 虚拟机方案](26-自编译mythroad虚拟机方案.md)。
 
 ---
 
@@ -72,6 +78,7 @@
 | [23 插件调用与上级现场恢复](23-插件调用与上级现场恢复.md) | 插件返回后退回主界面的根因：真机插件调用是 ext 内部的重启链（`RunFile` → `MR_STATE_RESTART` → `mr_timer` → `mr_stop` + `_mr_intra_start`），`mr_stop_ex` 只停实例不退应用；另修 `fs.resolve` 找不到 `mythroad/` 下插件包的问题 |
 | [24 插件 dump 恢复机制](24-插件dump恢复机制.md) | 斯凯插件机制的逆向结论：ext 把整个运行内存 dump 到 `plugins/dump%d`、退出插件后按**同一绝对地址**读回恢复；四个断点——`proxy.51mrp.com` DNS 缺失、`mr_stop_ex` 不释放 VM 内存、first-fit 堆地址漂移、`plugins/dump0` 路径解析到错误目录；依据 `skyengine-v2` 官方 e2e 与 `cfunction.ext` 字符串表 |
 | [25 斯凯 WAP 代理](25-斯凯WAP代理.md) | 浏览器内核 `brwcore.ext` 的代理协议还原：`ipaddr2.ini`（`<host>:<port>`）→ DNS → `POST /page2` 等六个端点；新增 `proxyenv.py` 生成地址缓存，接入全局启动流程 |
+| [26 自编译 mythroad 虚拟机方案](26-自编译mythroad虚拟机方案.md) | 回答"启动 MRP 是否必须依赖 cfunction.ext / 有没有 MR 解释器 / 能否用 mythroad.c 编译虚拟机"：cfunction.ext 就是编译后的 mythroad（内含 TOM 解释器），源码 47/50 可编、平台接口 86 个（A 类必需 35 个）、工具链与分阶段落地路径 |
 
 ### 第四篇：考据
 
