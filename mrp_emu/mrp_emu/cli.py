@@ -287,6 +287,19 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             log(f"[font] 系统字库准备失败（中文可能显示不出）: {exc}")
 
+    # ---------------- 斯凯 WAP 代理地址（全局）
+    # 浏览器插件链（plugins/brwcore.mrp 的 brwcore.ext）把请求 POST 给
+    # 斯凯私有端点（/page2、/image、/mrp ...）。代理地址的真机来源是
+    # 运营商下发的 mythroad/ipaddr2.ini；读不到才回退到默认域名
+    # proxy.51mrp.com。这里生成该文件，让插件直接拿到地址。
+    # 见 docs/25-斯凯WAP代理.md。
+    if runtime is not None:
+        try:
+            from .proxyenv import prepare_proxy_environment
+            prepare_proxy_environment(workdir, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[proxy-env] 代理地址准备失败（插件会回退到默认域名）: {exc}")
+
     # ---------------- 启动形态
     boot = args.boot or ("direct" if mrp_path else "boot")
     direct = boot == "direct"

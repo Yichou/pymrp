@@ -71,6 +71,7 @@
 | [22 字库与宿主接口语义对齐](22-字库与宿主接口语义对齐.md) | 支付成功后野指针崩溃的根因：`mr_getUserInfo` 字段错位（`type`/`ver` 未填）、未实现的 `mr_plat` 误返回 `MR_SUCCESS`、`mr_platEx` 未写 output 缓冲区；与 docs/21 同源的宿主接口语义问题 |
 | [23 插件调用与上级现场恢复](23-插件调用与上级现场恢复.md) | 插件返回后退回主界面的根因：真机插件调用是 ext 内部的重启链（`RunFile` → `MR_STATE_RESTART` → `mr_timer` → `mr_stop` + `_mr_intra_start`），`mr_stop_ex` 只停实例不退应用；另修 `fs.resolve` 找不到 `mythroad/` 下插件包的问题 |
 | [24 插件 dump 恢复机制](24-插件dump恢复机制.md) | 斯凯插件机制的逆向结论：ext 把整个运行内存 dump 到 `plugins/dump%d`、退出插件后按**同一绝对地址**读回恢复；四个断点——`proxy.51mrp.com` DNS 缺失、`mr_stop_ex` 不释放 VM 内存、first-fit 堆地址漂移、`plugins/dump0` 路径解析到错误目录；依据 `skyengine-v2` 官方 e2e 与 `cfunction.ext` 字符串表 |
+| [25 斯凯 WAP 代理](25-斯凯WAP代理.md) | 浏览器内核 `brwcore.ext` 的代理协议还原：`ipaddr2.ini`（`<host>:<port>`）→ DNS → `POST /page2` 等六个端点；新增 `proxyenv.py` 生成地址缓存，接入全局启动流程 |
 
 ### 第四篇：考据
 
