@@ -76,14 +76,25 @@ def get_font(name: str, size: int, bold: bool = False) -> pygame.font.Font:
 
 
 class Gfx:
-    def __init__(self, mem) -> None:
+    def __init__(self, mem, fb_addr: int | None = None) -> None:
+        """``fb_addr`` 为 None 时自己分配帧缓冲。
+
+        自编译 mythroad VM 那条路上，帧缓冲是 **mythroad 自己分配的**
+        （全局变量 ``mr_screenBuf``），我们只能绑定上去 —— 见
+        ``mythroad_vm.MythroadVm.screen_buf_addr``。
+        """
         self.mem = mem
         self.w = SCREEN_WIDTH
         self.h = SCREEN_HEIGHT
         self.size_bytes = self.w * self.h * 2
 
-        self.fb_addr = mem.malloc(self.size_bytes)
-        mem.memset(self.fb_addr, 0, self.size_bytes)
+        if fb_addr is None:
+            self.fb_addr = mem.malloc(self.size_bytes)
+            mem.memset(self.fb_addr, 0, self.size_bytes)
+        else:
+            self.fb_addr = fb_addr
+            self.owns_fb = False
+        self.owns_fb = True if fb_addr is None else False
 
         self.overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         self.overlay.fill((0, 0, 0, 0))

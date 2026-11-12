@@ -79,6 +79,7 @@
 | [24 插件 dump 恢复机制](24-插件dump恢复机制.md) | 斯凯插件机制的逆向结论：ext 把整个运行内存 dump 到 `plugins/dump%d`、退出插件后按**同一绝对地址**读回恢复；四个断点——`proxy.51mrp.com` DNS 缺失、`mr_stop_ex` 不释放 VM 内存、first-fit 堆地址漂移、`plugins/dump0` 路径解析到错误目录；依据 `skyengine-v2` 官方 e2e 与 `cfunction.ext` 字符串表 |
 | [25 斯凯 WAP 代理](25-斯凯WAP代理.md) | 浏览器内核 `brwcore.ext` 的代理协议还原：`ipaddr2.ini`（`<host>:<port>`）→ DNS → `POST /page2` 等六个端点；新增 `proxyenv.py` 生成地址缓存，接入全局启动流程 |
 | [26 自编译 mythroad 虚拟机方案](26-自编译mythroad虚拟机方案.md) | 回答"启动 MRP 是否必须依赖 cfunction.ext / 有没有 MR 解释器 / 能否用 mythroad.c 编译虚拟机"：cfunction.ext 就是编译后的 mythroad（内含 TOM 解释器），源码 47/50 可编、平台接口 86 个（A 类必需 35 个）、工具链与分阶段落地路径 |
+| [28 阶段 2：官方 mythroad 接管应用](28-阶段2-官方mythroad接管应用.md) | 官方运行时真的接手 MRP 的实证（读包/分配堆/分配帧缓冲/进入 TOM 解释器）；**决定性根因**：MRP 字节码的 number 常量是 4 字节 float，mrpoid 默认 double 且 `version>VERSION_50` 跳过了 size 检查 → 常量表整体错位 → 解释器把垃圾当函数指针调用；补丁 + 三个应用字节码 100% 匹配验证；剩余缺口：斯凯扩展机制 `c_load`/`_mr_c_load` |
 | [27 自编译 mythroad 虚拟机·阶段 1](27-自编译mythroad虚拟机-阶段1.md) | 阶段 1 实证：ARM 工具链到位、mythroad.c 交叉编译出 214KB 的 ARM 镜像、Unicorn 装载 + 自检函数返回魔数、双向调用模型（汇编 thunk + host_api 表）、13 个编译期踩坑记录、源码取舍表 |
 
 ### 第四篇：考据

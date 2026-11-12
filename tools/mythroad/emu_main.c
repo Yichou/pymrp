@@ -64,11 +64,18 @@ const struct emu_vm_hdr emu_hdr = {
  *   R1 = 入口文件名字符串在虚拟机内存里的地址
  * 返回 mr_start_dsm 的返回值。
  */
-uint32 emu_vm_main(uint32 hook_base, uint32 entry_ptr)
+uint32 emu_vm_main(uint32 hook_base, uint32 pack_ptr)
 {
+    /* 平台职责：绑定钩子槽位，然后把 MRP 包交给 mythroad。
+     *
+     * 包名用 mr_start_dsm_ex 的 "#<" 前缀语法：
+     *   "#<mythroad/foo.mrp"  -> pack_filename = "mythroad/foo.mrp"
+     * 不带前缀时会落到 MR_DEFAULT_PACK_NAME("*A"，ROM 内置包)，所以
+     * 启动磁盘上的 MRP 必须带前缀。
+     */
     emu_bind_slots((void*)hook_base);
-    if (entry_ptr == 0) {
+    if (pack_ptr == 0) {
         return 0xFFFFFFFFu;
     }
-    return (uint32)mr_start_dsm((const char*)entry_ptr);
+    return (uint32)mr_start_dsm_ex((const char*)pack_ptr, "start.mr");
 }

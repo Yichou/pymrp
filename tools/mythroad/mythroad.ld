@@ -53,10 +53,13 @@ SECTIONS
   }
 
   . = ALIGN(16);
+  /* newlib 堆：只够它自己那点 malloc 用（mythroad 有自己的堆管理器，
+   * 真正的大头是宿主在 __heap_end 之后分配的那块）。
+   * 给宿主留足空间：0x8B5850 + 0x100000 = 0x9B5850，宿主区到 0xE80000
+   * 有约 3.8MB，够放 mythroad 的 2MB 应用堆。 */
   __heap_start = .;
-  . += 0x00400000;           /* newlib 4MB 堆 */
+  . += 0x00100000;           /* newlib 1MB 堆 */
   __heap_end = .;
-  __heap_size = 0x00400000;  /* 常量符号：供 emu_hdr 静态初始化用 */
 
   __stack_top = 0x00E80000;  /* 栈顶（向下生长） */
 

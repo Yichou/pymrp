@@ -60,7 +60,64 @@ VM_SPACE = 0x00600000          # 0x880000..0xE80000
 STACK_TOP = 0x00E80000
 STACK_SIZE = 0x00100000
 
+# 宿主主动调虚拟机函数时的「返回哨兵」：
+# 把 LR 设成这里，函数 `bx lr` 回来就正好停在哨兵，emu_start 以此为 until。
+# ⚠️ 早先写成 emu_start(addr, 0, 0, 1) —— count=1 只跑一条指令，
+# 自检函数因为第一条指令恰好是 `mov r0` 才「碰巧」返回了魔数。
+SENTINEL = 0x01000000
+SENTINEL_SIZE = 0x1000
+
 EMU_MAGIC = 0x4D52564D          # 'MRVM'
+
+# 字模：16x16，每行 2 字节，行内高位在左（与原厂 gb16.uc2 一致）
+GLYPH_W = 16
+GLYPH_H = 16
+GLYPH_BYTES = GLYPH_W * GLYPH_H // 8
+
+
+def _make_box_glyph() -> bytes:
+    """字库里没有的字符回一个「口」（官方手册的建议）。"""
+    buf = bytearray(GLYPH_BYTES)
+    for y in range(GLYPH_H):
+        for x in range(GLYPH_W):
+            if 2 <= y <= 13 and x in (2, 3, 12, 13):
+                n = y * GLYPH_W + x
+                buf[n // 8] |= 0x80 >> (n % 8)
+    return bytes(buf)
+
+
+class FontBank:
+    """按 Unicode 码取 16x16 的 1bpp 字模。
+
+    原厂 ``mythroad/fonts/gb16.uc2`` 的排布是 **id * 32 线性取**
+    （没有偏移表），id 就是 Unicode 码位 —— 与
+    ``mr_getCharBitmap(ch, ...)`` 的查询方式完全一致。
+    """
+
+    def __init__(self, path: str | Path | None) -> None:
+        self.data = b""
+        self.path = path
+        if path:
+            p = Path(path)
+            if p.is_file():
+                try:
+                    self.data = p.read_bytes()
+                except OSError:
+                    self.data = b""
+        self.box = _make_box_glyph()
+
+    @property
+    def available(self) -> bool:
+        return len(self.data) >= GLYPH_BYTES
+
+    def glyph(self, ch: int) -> bytes:
+        if 0 <= ch < len(self.data) // GLYPH_BYTES:
+            off = ch * GLYPH_BYTES
+            g = self.data[off:off + GLYPH_BYTES]
+            if any(g):
+                return g
+        return self.box
+
 
 
 class VmSpace:
@@ -172,7 +229,8 @@ class MythroadVm:
     """自编译的 mythroad 虚拟机。"""
 
     def __init__(self, image: str | Path,
-                 log: Callable[[str], None] = print) -> None:
+                 log: Callable[[str], None] = print,
+                 font_path: str | Path | None = None) -> None:
         self.log = log
         self.image_path = Path(image)
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
@@ -200,6 +258,16 @@ class MythroadVm:
         self.vm_mem_reserved: int | None = None
         self.vm_mem_len: int = 0
 
+        # 字库与字模缓存
+        self.font = FontBank(font_path)
+        self.glyph_cache: dict[int, int] = {}
+        self.glyph_scratch = 0
+
+        # 平台接口调用统计（诊断用）
+        self.calls: dict[str, int] = {}
+        self.call_seq: list[str] = []
+        self.debug_printf = False
+
         self.host_api: dict[str, int] = {}
         self._read_host_api()
 
@@ -216,6 +284,9 @@ class MythroadVm:
         self.uc.mem_write(LOW_BASE, b"\x00" * LOW_SIZE)
         self.uc.mem_map(HOOK_BASE, HOOK_SIZE, UC_PROT_ALL)
         self.uc.mem_map(VM_BASE, VM_SPACE, UC_PROT_ALL)
+        # 哨兵页：一条 NOP，宿主调虚拟机函数时用它当返回点
+        self.uc.mem_map(SENTINEL, SENTINEL_SIZE, UC_PROT_ALL)
+        self.uc.mem_write(SENTINEL, b"\x00\x00\xa0\xe1")   # nop
 
     # ------------------------------------------------------------ 头部
     def _read_header(self) -> None:
@@ -296,6 +367,8 @@ class MythroadVm:
         name = self.slot_map.get(address)
         if name is None:
             return
+        self.calls[name] = self.calls.get(name, 0) + 1
+        self.call_seq.append(name)
         fn = self.platform_handlers.get(name)
         if fn is None:
             uc.reg_write(UC_ARM_REG_R0, 0xFFFFFFFF)
@@ -316,9 +389,9 @@ class MythroadVm:
         for i, a in enumerate(args):
             uc.reg_write((UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
                           UC_ARM_REG_R3)[i], a)
-        uc.reg_write(UC_ARM_REG_LR, 0)
+        uc.reg_write(UC_ARM_REG_LR, SENTINEL)
         try:
-            uc.emu_start(addr, 0, 0, 1)
+            uc.emu_start(addr, SENTINEL, 0, 0)
         except UcError as exc:
             self.log(f"[mvm] 调用 {name} 失败: {exc}")
             return 0xFFFFFFFF
@@ -340,7 +413,7 @@ class MythroadVm:
         try:
             return self._call("mr_start_dsm", buf)
         finally:
-            self.heap.free(buf)
+            self.heap.free_block(buf)
 
     # ------------------------------------------------- 地址恒定的 VM 内存
     def alloc_vm_memory(self, size: int) -> int:
@@ -370,4 +443,69 @@ class MythroadVm:
         if block == self.vm_mem_reserved:
             # 预留区留着下一轮复用 —— 地址必须恒定
             return True
-        return self.heap.free(block)
+        return self.heap.free_block(block)
+
+    # ------------------------------------------------------------ 屏幕缓冲
+    def screen_buf_addr(self) -> int:
+        """读 mythroad 全局变量 ``mr_screenBuf`` 的值。
+
+        自编译 VM 里帧缓冲是 mythroad 自己分配的（MR_SCREEN_CACHE），
+        指针存在全局变量里 —— 我们从符号表拿到变量地址，再读它存的值。
+        必须在 mr_start_dsm 之后才有值（那时才分配）。
+        """
+        var = self.syms.get("mr_screenBuf")
+        if not var:
+            return 0
+        return struct.unpack("<I", self.uc.mem_read(var, 4))[0]
+
+    # ------------------------------------------------------------ 字模
+    def glyph_ptr(self, ch: int) -> int:
+        """把字模写进虚拟机内存，返回指针（供 mr_getCharBitmap 返回）。"""
+        addr = self.glyph_cache.get(ch)
+        if addr:
+            return addr
+        data = self.font.glyph(ch)
+        if not self.glyph_scratch:
+            self.glyph_scratch = self.heap.malloc(GLYPH_BYTES * 64)
+        slot = len(self.glyph_cache) % 64
+        addr = self.glyph_scratch + slot * GLYPH_BYTES
+        self.mem.write(addr, data)
+        self.glyph_cache[ch] = addr
+        return addr
+
+    # ------------------------------------------------------------ 启动
+    def start_app(self, entry: str) -> int:
+        """启动一个 MRP 应用（走官方的 mr_start_dsm 链）。
+
+        入口是 ``emu_vm_main(hook_base, entry_ptr)``：
+        它先把宿主分配的钩子槽位写进各 thunk 的槽位变量，再调
+        ``mr_start_dsm(entry)`` —— 与真机「平台把 MRP 交给 mythroad」同构。
+        """
+        addr = self.syms.get("emu_vm_main")
+        if not addr:
+            raise RuntimeError("镜像里找不到 emu_vm_main")
+        raw = entry.encode("gbk", errors="replace") + b"\x00"
+        buf = self.heap.malloc(len(raw))
+        self.mem.write(buf, raw)
+        try:
+            return self._call_addr(addr, self.slot_base, buf)
+        finally:
+            self.heap.free_block(buf)
+
+    def _call_addr(self, addr: int, *args: int) -> int:
+        uc = self.uc
+        uc.reg_write(UC_ARM_REG_SP, STACK_TOP)
+        for i, a in enumerate(args):
+            uc.reg_write((UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
+                          UC_ARM_REG_R3)[i], a)
+        uc.reg_write(UC_ARM_REG_LR, SENTINEL)
+        try:
+            uc.emu_start(addr, SENTINEL, 0, 0)
+        except UcError as exc:
+            pc = uc.reg_read(UC_ARM_REG_PC)
+            lr = uc.reg_read(UC_ARM_REG_LR)
+            sp = uc.reg_read(UC_ARM_REG_SP)
+            self.log(f"[mvm] 调用 0x{addr:X} 失败: {exc} "
+                     f"PC=0x{pc:X} LR=0x{lr:X} SP=0x{sp:X}")
+            return 0xFFFFFFFF
+        return uc.reg_read(UC_ARM_REG_R0)

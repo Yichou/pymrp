@@ -31,13 +31,16 @@ ALIASES: dict[str, str] = {
 }
 
 
-def _make_handler(fn: Callable[..., None]) -> Callable[[MythroadVm], None]:
+def _make_handler(name: str, fn: Callable[..., None]) -> Callable[[MythroadVm], None]:
     def handler(vm: MythroadVm) -> None:
         call = ArmCall(vm.uc, vm.mem)
         try:
             fn(call, vm)
         except Exception as exc:                  # noqa: BLE001
-            vm.log(f"[mvm] 平台接口异常: {exc}")
+            import traceback
+            vm.log(f"[mvm] 平台接口 {name} 异常: {exc}")
+            for line in traceback.format_exc().splitlines()[-6:]:
+                vm.log("    " + line)
             call.ret(0xFFFFFFFF)
         call.flush()
     return handler
@@ -60,7 +63,7 @@ def bind_platform(vm: MythroadVm) -> tuple[list[str], list[str]]:
         if fn is None or not callable(fn):
             missing.append(name)
             continue
-        vm.platform_handlers[name] = _make_handler(fn)
+        vm.platform_handlers[name] = _make_handler(name, fn)
         bound.append(name)
     return bound, missing
 

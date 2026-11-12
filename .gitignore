@@ -32,3 +32,4 @@ tools/mythroad/selfimpl.txt
 tools/mythroad/emu_stub.s
 tools/mythroad/emu_slots.c
 tools/armtoolchain/
+tools/mythroad/patched_mr_undump.c

@@ -138,6 +138,12 @@ def mr_printf(ctx, vm):
     text = "".join(out)
     try:
         vm.log(f"[mvm] {text}")
+        if vm.debug_printf:
+            import struct
+            from unicorn.arm_const import UC_ARM_REG_SP
+            sp = ctx.uc.reg_read(UC_ARM_REG_SP)
+            vals = struct.unpack("<6I", ctx.uc.mem_read(sp, 24))
+            vm.log(f"[mvm]   fmt={fmt!r} SP=0x{sp:X} stack={[hex(v) for v in vals]}")
     except Exception:           # noqa: BLE001
         pass
     ctx.ret(len(text))
@@ -228,3 +234,68 @@ def mr_save_mrp(ctx, vm):
 
 def mr_save_mrp_with_handle(ctx, vm):
     ctx.ret(MR_FAILED)
+
+
+# ==================================================================== 字模与文本
+#
+# 自编译 VM 里 mythroad 自己画字：调 mr_platDrawCharReal 逐字画进
+# mr_screenBuf（帧缓冲是 mythroad 分配的，不走 #if 0 里的
+# mr_drawText / mr_bufToScreen 那套「厂商屏幕缓冲」接口）。
+#
+# 字模格式（官方手册 mr_getCharBitmap）：**1bpp，每行紧凑排列**。
+# 我们用原厂 gb16.uc2 —— 16x16，每行恰好 2 字节，行内高位在左，
+# 两者天然兼容。
+
+GLYPH_W = 16
+GLYPH_H = 16
+
+
+def mr_getCharBitmap(ctx, vm):
+    """返回字符点阵（1bpp），并回填宽高。
+
+    官方建议：字库里没有的字符不要返回失败，返回一个「口」即可 ——
+    FontBank.glyph() 已经这么做了。
+    """
+    ch = ctx.arg(0) & 0xFFFF
+    w_ptr = ctx.arg(2)
+    h_ptr = ctx.arg(3)
+    addr = vm.glyph_ptr(ch)
+    if w_ptr:
+        ctx.mem.set_u32(w_ptr, GLYPH_W)
+    if h_ptr:
+        ctx.mem.set_u32(h_ptr, GLYPH_H)
+    ctx.ret(addr)
+
+
+def mr_platDrawCharReal(ctx, vm):
+    """在帧缓冲上画一个字符（真机由固件完成，这里由宿主画）。"""
+    ch = ctx.arg(0) & 0xFFFF
+    x = ctx.sarg(1)
+    y = ctx.sarg(2)
+    color = ctx.arg(3) & 0xFFFF
+
+    gfx = vm.app.gfx.resolve()
+    fb = gfx.fb_addr
+    w = gfx.w
+    h = gfx.h
+    data = vm.font.glyph(ch)
+
+    for row in range(GLYPH_H):
+        py = y + row
+        if py < 0 or py >= h:
+            continue
+        bits = (data[row * 2] << 8) | data[row * 2 + 1]
+        if not bits:
+            continue
+        # 先读这一行（16 像素 = 32 字节），改完再写回 —— 透明像素不动
+        row_addr = fb + (py * w + max(x, 0)) * 2
+        if x + GLYPH_W <= 0 or x >= w:
+            continue
+        span = min(GLYPH_W, w - max(x, 0))
+        line = bytearray(ctx.mem.read(row_addr, span * 2))
+        for col in range(span):
+            if bits & (0x8000 >> col):
+                off = col * 2
+                line[off] = color & 0xFF
+                line[off + 1] = (color >> 8) & 0xFF
+        ctx.mem.write(row_addr, bytes(line))
