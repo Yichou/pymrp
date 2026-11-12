@@ -63,7 +63,8 @@ def main() -> int:
         return 2
 
     # ---------------------------------------------------------- 装载
-    vm = MythroadVm(IMAGE, log=log, font_path=FONT if FONT.is_file() else None)
+    vm = MythroadVm(IMAGE, log=log, font_path=FONT if FONT.is_file() else None,
+                   trace="--trace" in sys.argv)
     vm.debug_printf = "--printf" in sys.argv
     app = MythroadApp(vm, WORKDIR, log=log)
     vm.app = app
@@ -163,6 +164,33 @@ def main() -> int:
         check(False, "mr_event 送按键", str(exc))
 
     # ---------------------------------------------------------- 结果
+    if vm.crash_trace:
+        print("\n崩溃瞬间的执行路径 (最后 30 个 PC):")
+        for a in vm.crash_trace[-30:]:
+            print(f"   0x{a:08X}")
+        # 崩溃处的指令 + 与包内 .ext 的 CMAP 段比对
+        pc = vm.crash_trace[-1] if vm.crash_trace else 0
+        try:
+            code = bytes(vm.uc.mem_read(pc, 32))
+            print(f"\n崩溃处指令 @0x{pc:X}: {code.hex()}")
+            # 在 VM 内存里搜包内 .ext 的 CMAP 段
+            from mrp_emu.catalog import read_mrp_entries, read_mrp_entry_data
+            ents = {e.name: e for e in read_mrp_entries(mrp)}
+            if "cfunction.ext" in ents:
+                ext = read_mrp_entry_data(mrp, ents["cfunction.ext"])
+                print(f"包内 cfunction.ext: {len(ext)} 字节, 头 {ext[:8]!r}")
+                # CMAP 段就在头后面（MRPG+CMAP 之后紧跟代码）
+                body = ext[8:]
+                hit = None
+                for off in range(0, min(len(body), 4096), 4):
+                    if body[off:off+8] == code[:8]:
+                        hit = off; break
+                print("CMAP 段命中崩溃代码:", f"+0x{hit:X}" if hit is not None else "未命中")
+                if hit is not None:
+                    print(f"  -> 堆地址 0x{pc:X} = cfunction.ext 代码 +0x{hit:X}"
+                          f"（装载基址 0x{pc - hit:X}）")
+        except Exception as exc:                  # noqa: BLE001
+            print("崩溃现场分析失败:", exc)
     print("\n平台接口调用序列 (前 40 个):")
     seq = vm.call_seq[:40]
     for i in range(0, len(seq), 8):

@@ -35,7 +35,7 @@ INC := -I$(CURDIR) \
        -I$(MRDIR)/tomr/include -I$(MRDIR)/tomr/src
 
 # MR_VERSION 是官方头文件里唯一缺的宏（mythroad.c:5342 / src/mr_api.c:868）
-DEFS := -DMR_VERSION=0x0A01 -DMRP_UNDUMP_FLOAT_NUMBER=1
+DEFS := -DMR_VERSION=0x0A01 -DMRP_UNDUMP_FLOAT_NUMBER=1 -DMRP_C_LOAD_STUB=1
 
 CFLAGS := $(ARCH) -O2 -ffreestanding -fno-builtin -fno-common -fno-strict-aliasing \
           $(INC) $(DEFS) -w
@@ -70,6 +70,8 @@ MR_C := mythroad.c \
 EMU_C := emu_main.c emu_sys.c emu_slots.c emu_libc.c emu_crt.c
 
 MR_OBJS := $(patsubst $(MRDIR)/%.c,obj/mr/%.o,$(addprefix $(MRDIR)/,$(MR_C)))
+# mythroad.c 用打过补丁的版本（注册斯凯扩展加载入口 c_load/_mr_c_load）
+MR_OBJS := $(filter-out obj/mr/mythroad.o,$(MR_OBJS)) obj/mr/patched/mythroad.o
 # mr_undump.c 用打过补丁的版本（number 常量按 4 字节 float 读）
 MR_OBJS := $(filter-out obj/mr/src/mr_undump.o,$(MR_OBJS)) \
            obj/mr/patched/mr_undump.o
@@ -84,12 +86,19 @@ SELFIMPL := selfimpl.txt
 all: $(TARGET)
 
 # 1) mythroad 本体
-obj/mr/%.o: $(MRDIR)/%.c
+obj/mr/%.o: $(MRDIR)/%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# 1.4) mythroad 补丁：注册斯凯扩展加载入口（c_load / _mr_c_load）
+obj/mr/patched/mythroad.o: $(REPO)/tools/patch_mythroad.py $(MRDIR)/mythroad.c Makefile
+	@mkdir -p $(dir $@)
+	@cd $(REPO) && python tools/patch_mythroad.py \
+	    --src $(MRDIR)/mythroad.c --out tools/mythroad/patched_mythroad.c
+	$(CC) $(CFLAGS) -c patched_mythroad.c -o $@
+
 # 1.5) mr_undump 补丁：MRP 字节码的 number 常量是 4 字节 float
-obj/mr/patched/mr_undump.o: $(REPO)/tools/patch_mr_undump.py $(MRDIR)/src/mr_undump.c
+obj/mr/patched/mr_undump.o: $(REPO)/tools/patch_mr_undump.py $(MRDIR)/src/mr_undump.c Makefile
 	@mkdir -p $(dir $@)
 	@cd $(REPO) && python tools/patch_mr_undump.py \
 	    --src $(MRDIR)/src/mr_undump.c --out tools/mythroad/patched_mr_undump.c
@@ -108,7 +117,7 @@ emu_stub.s emu_slots.c: $(SELFIMPL) $(MRDIR)/mrporting.h \
 	    --out-dir tools/mythroad --exclude-file tools/mythroad/$(SELFIMPL)
 
 # 4) 移植层
-obj/emu/%.o: %.c emu_port.h
+obj/emu/%.o: %.c emu_port.h Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

@@ -230,7 +230,8 @@ class MythroadVm:
 
     def __init__(self, image: str | Path,
                  log: Callable[[str], None] = print,
-                 font_path: str | Path | None = None) -> None:
+                 font_path: str | Path | None = None,
+                 trace: bool = False) -> None:
         self.log = log
         self.image_path = Path(image)
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
@@ -240,6 +241,7 @@ class MythroadVm:
         self.app = None
 
         self._map_memory()
+        self.trace_on = bool(trace)
         self.img: ElfImage = load_elf(self.uc, self.image_path)
         self._read_header()
         self._read_symbols()
@@ -267,6 +269,10 @@ class MythroadVm:
         self.calls: dict[str, int] = {}
         self.call_seq: list[str] = []
         self.debug_printf = False
+        # 执行路径追踪（诊断用）：记录最近 N 个 PC
+        self.trace: list[int] = []
+        self.trace_on = False
+        self.crash_trace: list[int] = []
 
         self.host_api: dict[str, int] = {}
         self._read_host_api()
@@ -361,7 +367,14 @@ class MythroadVm:
             self.slot_map[a] = name
         self.uc.hook_add(UC_HOOK_CODE, self._hook, None,
                          HOOK_BASE, HOOK_BASE + len(names) * 4)
+        if self.trace_on:
+            self.uc.hook_add(UC_HOOK_CODE, self._trace_hook)
         self.log(f"[mvm] 钩子表就绪：{len(names)} 项")
+
+    def _trace_hook(self, uc, address: int, size: int, user_data) -> None:
+        self.trace.append(address)
+        if len(self.trace) > 40:
+            del self.trace[:-40]
 
     def _hook(self, uc, address: int, size: int, user_data) -> None:
         name = self.slot_map.get(address)
@@ -507,5 +520,6 @@ class MythroadVm:
             sp = uc.reg_read(UC_ARM_REG_SP)
             self.log(f"[mvm] 调用 0x{addr:X} 失败: {exc} "
                      f"PC=0x{pc:X} LR=0x{lr:X} SP=0x{sp:X}")
+            self.crash_trace = list(self.trace)
             return 0xFFFFFFFF
         return uc.reg_read(UC_ARM_REG_R0)
